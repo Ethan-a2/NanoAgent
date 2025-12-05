@@ -1,9 +1,15 @@
 # References: 
 # https://github.com/searlion/mlx-finetuning/blob/main/MLX%20LM%20GRPO.ipynb
 # https://abderrahmanskiredjgithub.io/the-illustrated-grpo/The%20Illustrated%20GRPO.pdf
+# https://github.com/huggingface/trl/issues/3662
+# https://huggingface.co/docs/trl/main/en/grpo_trainer#trl.GRPOConfig
 
 import json
 import os
+os.environ['HF_HUB_OFFLINE'] = '1'
+import warnings
+warnings.filterwarnings("ignore")
+
 import re
 import sys
 from difflib import SequenceMatcher
@@ -26,11 +32,11 @@ from data.grpo.salseforce_tool import salesfores_toolcall
 from data.grpo.websearch_tool import tool_calling_traces
 from data.grpo.calculate import calculate_math
 from data.grpo.gorilla_tool import gorilla_openfun
+from scipy.ndimage import gaussian_filter1d
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 plt.ioff()
 matplotlib.use("Agg")
-# mx.set_cache_limit(int(1*1024*1024*1024*8) // 2)
 
 from dataclasses import dataclass
 from utils.tokenizer import get_tokenizer
@@ -41,30 +47,33 @@ from utils.webtool import tool_call_extract
 class TrainConfig:
     # Iterations
     ITERS = 5_000
-    GENERATE_DATA = True
+    GENERATE_DATA = False
     BATCH_SIZE = 1
-    GEN_LEN = 256# + 128
+    GEN_LEN = 256
     SAVE_FREQ = 50
-    # Weight checkpoint
     LOAD_PREV = False
-    # Learning rate
-    LEARNING_RATE = 5e-6
-    WEIGHT_DECAY = 0.0
+    LEARNING_RATE = 2e-5 # 5e-6
+    WEIGHT_DECAY = 0.1
     EPSILON_MIN = 0.2
     EPSILON_HIGH = 0.28
     GROUP_SIZE = 4
-    WARMUP_STEPS = 100 #int(ITERS * 0.1)
-    DECAY_STEPS = 100
+    WARMUP_STEPS = 50
+    DECAY_STEPS = 50
     BETA = 0 #0.04
-    UPDATE_WEIGHT = 1 #0.1
-    MAX_INPUT_LEN = 1024 #+ 784
-    SAVE_PATH = "weights/NanoAgent-135M-gspo"
+    UPDATE_WEIGHT = 32 # 64
+    EVAL_STEPS = 50
+    NUM_ITER = 1
+    GRAD_NORM = 1 #1
+    MAX_INPUT_LEN = 1024 + 784
+    SAVE_PATH = "weights/NanoAgent-135M-grpo-web"
     DATA_PATH = "data/datasets/grpo_unordered_cache.pickle"
     TQDM = True
-    SAMPLING = "sequence"
+    SAMPLING = "token"
+    TEMPERATURE = 0.8 # Should to be < 0.9
 
 
 assert TrainConfig.SAMPLING in ['token', 'sequence']
+assert 0 <= TrainConfig.UPDATE_WEIGHT
 
 config_dict = {
     k: v
@@ -73,19 +82,17 @@ config_dict = {
 }
 print(json.dumps(config_dict, indent=2))
 
-# if TrainConfig.LOAD_PREV:
-    # assert TrainConfig.GENERATE_DATA is False
-
 # The model that will be trained
 MODEL_PATH = "weights/NanoAgent-135M"
-# MODEL_PATH = "weights/NanoAgent-135M-think-v2"
-# MODEL_PATH = "weights/SmolLM2-135M-mlx-grpo"
 
 model, _, model_config = load(MODEL_PATH, return_config=True)
 model.train()
 
+# if TrainConfig.UPDATE_WEIGHT != 1:
 model_old = load(MODEL_PATH)[0]
 model_old.eval().freeze()
+# else:
+#     model_old = None
 
 if TrainConfig.BETA > 0:
     # The reference model for KL-div (freezed)
@@ -173,16 +180,6 @@ def grad_checkpoint(layer):
     type(layer).__call__ = checkpointed_fn
 
 
-# for layer in model.layers[:6]:
-#     grad_checkpoint(layer)
-# for layer in model_old.layers[:6]:
-#     grad_checkpoint(layer)
-
-
-print(
-    f"Memory consumption: {mx.get_active_memory() / 1024 / 1024:.2f} | {mx.get_peak_memory() / 1024 / 1024:.2f} Megabytes"
-)
-
 def total_tokens(data):
     return len(
         tokenizer.encode(
@@ -197,12 +194,13 @@ def tool_tokens(ground_tool_call):
 
 
 if TrainConfig.GENERATE_DATA:
-    train_ds = tool_calling_traces(tokenizer)[:1200] + salesfores_toolcall(tokenizer=tokenizer, n_tool_calls=2, n_tool_inputs=6, dedupe_ratio=0.95, think=False)
+    train_ds = tool_calling_traces(tokenizer)#+ salesfores_toolcall(tokenizer=tokenizer, n_tool_calls=2, n_tool_inputs=6, dedupe_ratio=0.95, think=False) #+ gorilla_openfun(tokenizer=tokenizer)
+    # train_ds = salesfores_toolcall(tokenizer=tokenizer, n_tool_calls=1, n_tool_inputs=6, dedupe_ratio=0.95, think=False)
     random.shuffle(train_ds)
     train_ds = list(filter(lambda x: total_tokens(x['prompt']) <= TrainConfig.MAX_INPUT_LEN, train_ds))
-    train_ds.sort(
-        key=lambda x: (len(json.dumps(x["ground_tool_call"])), x["num_input_tools"])
-    )
+    # train_ds.sort(
+    #     key=lambda x: (len(json.dumps(x["ground_tool_call"])), x["num_input_tools"])
+    # )
     # train_ds = train_ds[:TrainConfig.ITERS]
     print("New Generated Dataset length:", len(train_ds))
     with open(TrainConfig.DATA_PATH, 'wb') as fp:
@@ -217,14 +215,30 @@ else:
 
 # sys.exit()
 
-def mean_map(data, win=25):
+def evaluate(eval_model):
+    eval_data = train_ds[-50:]
+    rewards = []
+    eval_model.eval()
+    for idx, data in enumerate(eval_data):
+        prompt_tokens = tokenizer.encode(data['prompt'])
+        scorer = data['scorer']
+        response = generate(
+            eval_model,
+            tokenizer,
+            prompt_tokens,
+            max_tokens=TrainConfig.GEN_LEN,
+        )
+        rewards.append(scorer(llm_gen=response))
+    return rewards
+
+
+def mean_map(data, win=50):
     def _mean(x):
         while len(x) < win: x.append(0)
         return sum(x) / len(x)
     _data = []
     for i in range(len(data)):
         data_win = data[max(0, i-win+1):i+1]
-        # print(i, len(data_win))
         _data.append(_mean(data_win))
     return _data
 
@@ -234,11 +248,7 @@ def prog_graph(
     all_losses,
     learning_rates,
     all_rewards,
-    max_rewards,
-    std_rewards,
-    tool_call_complexity,
-    total_prompt_tokens,
-    window=20,
+    eval_rewards,
     save_path=None,
     plot=True,
 ):
@@ -247,29 +257,26 @@ def prog_graph(
     fig.suptitle(f"GRPO Iter: {iter}", fontsize=13)
 
     # GRPO Loss
-    # axes[0].plot(
-    #     np.cumsum(all_losses) / (np.arange(len(all_losses)) + 1), color="tab:red"
-    # )
-    axes[0].plot(
-        mean_map(all_losses), color="tab:red"
-    )
+    # axes[0].plot(np.cumsum(all_losses) / (np.arange(len(all_losses)) + 1), color="tab:red", alpha=0.6, linestyle='--')
+    axes[0].plot(mean_map(all_losses), color="tab:red", alpha=0.6, linestyle='--')
+    axes[0].plot(gaussian_filter1d(all_losses, sigma=2), color="tab:red", linewidth=2)
+    # axes[0].plot(all_losses, color="tab:red", alpha=0.2)
     axes[0].set_title("Training Loss")
     axes[0].grid(True)
 
     # Rewards
-    # axes[1].plot(
-    #     np.cumsum(all_rewards) / (np.arange(len(all_rewards)) + 1), color="tab:blue"
-    # )
-    axes[1].plot(mean_map(all_rewards), color="tab:blue")
-    # axes[1].plot(
-    #     np.cumsum(max_rewards) / (np.arange(len(max_rewards)) + 1), color="tab:orange"
-    # )
-    axes[1].set_title("All Reward (blue) | Max Reward (orange)")
+    # axes[1].plot(np.cumsum(all_rewards) / (np.arange(len(all_rewards)) + 1), color="tab:blue", alpha=0.6, linestyle='--')
+    axes[1].plot(mean_map(all_rewards), color="tab:blue", alpha=0.6, linestyle='--')
+    axes[1].plot(gaussian_filter1d(all_rewards, sigma=2.5), linewidth=2, color="tab:blue")
+    axes[1].plot(all_rewards, alpha=0.2, color="tab:blue")
+    axes[1].set_title("All Reward (blue)")
     axes[1].grid(True)
 
-    # Tool call complexity
-    axes[2].plot(tool_call_complexity, color="tab:purple")
-    axes[2].set_title("Tool Defs")
+    itrs = [x[0] for x in eval_rewards]
+    eval_scores = [x[1] for x in eval_rewards]
+    axes[2].scatter(itrs, eval_scores, color="tab:green", linewidth=2, marker="*")
+    axes[2].plot(itrs, eval_scores, color="tab:green", linewidth=2)
+    axes[2].set_title("Eval Rewards")
     axes[2].grid(True)
 
     # total_prompt_tokens
@@ -296,20 +303,10 @@ def load_state(path=TrainConfig.SAVE_PATH):
     with open(os.path.join(path, "train_info.json"), "r") as f:
         train_info = json.load(f)
 
-    if 0 < TrainConfig.UPDATE_WEIGHT < 1:
-        model_old_path = os.path.join(path, "old_model")
-        if os.path.exists(model_old_path):
-            model_old = load(Path(path), model_config=model_config)[0]
-        else:
-            model_old = None
-    else:
-        model_old = None
-
     mx.eval(model.state, optimizer.state)
     print("Model loaded", flush=True)
     return (
         model,
-        model_old,
         optimizer,
         train_info["iter_step"],
         train_info["losses"],
@@ -317,15 +314,13 @@ def load_state(path=TrainConfig.SAVE_PATH):
         train_info["all_rewards"],
         train_info["max_rewards"],
         train_info["std_rewards"],
-        train_info["tool_call_complexity"],
-        train_info["total_prompt_tokens"],
+        train_info["eval_rewards"]
     )
 
 
 if TrainConfig.LOAD_PREV:
     (
         model,
-        _model_old,
         optimizer,
         iter_step,
         losses,
@@ -333,14 +328,8 @@ if TrainConfig.LOAD_PREV:
         all_rewards,
         max_rewards,
         std_rewards,
-        tool_call_complexity,
-        total_prompt_tokens,
+        eval_rewards
     ) = load_state(TrainConfig.SAVE_PATH)
-    # model_old = model_old.update(model.parameters())
-    # model_old.train().freeze()
-    if _model_old is not None:
-        model_old = _model_old
-        model_old.eval().freeze()
     print("Previous weights loaded")
 else:
     (
@@ -350,10 +339,16 @@ else:
         all_rewards,
         max_rewards,
         std_rewards,
-        tool_call_complexity,
-        total_prompt_tokens,
-    ) = 0, [], [], [], [], [], [], []
+        eval_rewards
+    ) = 0, [], [], [], [], [], []
 
+tot_layers = len(model.layers)
+for layer in model.layers[:3]:
+    grad_checkpoint(layer)
+
+print(
+    f"Memory consumption: {mx.get_active_memory() / 1024 / 1024:.2f} | {mx.get_peak_memory() / 1024 / 1024:.2f} Megabytes"
+)
 
 def save_state(
     iter_step,
@@ -362,10 +357,8 @@ def save_state(
     all_rewards,
     max_rewards,
     std_rewards,
-    tool_call_complexity,
-    total_prompt_tokens,
+    eval_rewards,
     model,
-    model_old,
     optimizer,
     path=TrainConfig.SAVE_PATH,
 ):
@@ -375,10 +368,6 @@ def save_state(
     mx.save_safetensors(
         os.path.join(path, "optimizer.safetensors"), dict(tree_flatten(optimizer.state))
     )
-
-    if 0 < TrainConfig.UPDATE_WEIGHT < 1:
-        model_old_path = os.path.join(path, "old_model")
-        save_model(save_path=model_old_path, model=model)
 
     train_info = {
         "training_params": {
@@ -391,8 +380,7 @@ def save_state(
         "all_rewards": all_rewards,
         "max_rewards": max_rewards,
         "std_rewards": std_rewards,
-        "tool_call_complexity": tool_call_complexity,
-        "total_prompt_tokens": total_prompt_tokens,
+        "eval_rewards": eval_rewards
     }
     with open(os.path.join(path, "train_info.json"), "w") as f:
         json.dump(train_info, f, indent=2)
@@ -430,13 +418,27 @@ def calculate_log_probs(model, io_toks, ans_toks, pad_tok_id):
     )
 
     # Recovery from padding
-    # n_tokens = mx.where(ans_toks != pad_tok_id, 1, 0).sum(axis=-1) + 1e-8
     pad_mask = mx.where(ans_toks != pad_tok_id, 1, 0)
-    # selected_log_probs = mx.where(ans_toks != pad_tok_id, selected_log_probs, 0)
 
     return selected_log_probs, pad_mask
-    # Sum log probabilities across the answer sequence
-    # return mx.sum(selected_log_probs, axis=-1) / n_tokens
+
+
+def min_p_sampler(logits, min_p=0.1, temperature=0.9):
+    """
+    Min-p sampling for MLX.
+    Args:
+        logits: [vocab] MLX array of logits.
+        min_p (float): threshold ∈ (0, 1]. Tokens with p >= min_p * max(p) kept.
+    Returns:
+        int: sampled token ID
+    """
+    # Softmax → probabilities
+    probs = mx.softmax(logits)
+    # Find maximum probability
+    max_p = mx.max(probs)
+    # Boolean mask: keep tokens >= min_p * max_p
+    mask = probs >= (min_p * max_p)
+    return mx.random.categorical((logits * mask) / temperature, axis=-1)
 
 
 def grpo_loss_fn(
@@ -449,6 +451,8 @@ def grpo_loss_fn(
     old_log_probs, old_pad_mask = calculate_log_probs(
         model_old, io_toks, a_toks, tokenizer.pad_token_id
     )
+    old_log_probs = mx.stop_gradient(old_log_probs)
+
     total_tokens = pad_mask.sum(axis=-1)
     n_groups = io_toks.shape[0]
     advantages = mx.expand_dims(advantages, 1)
@@ -460,9 +464,11 @@ def grpo_loss_fn(
         # GSPO Equation: https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/gspo-reinforcement-learning?q=learning+rage
         ratio = mx.exp(((log_probs - old_log_probs) * pad_mask).sum(axis=-1) / pad_mask.sum(axis=-1))
         clipped_ratio = mx.clip(ratio, 1.0 - TrainConfig.EPSILON_MIN, 1.0 + TrainConfig.EPSILON_HIGH)
+        # print(mx.minimum(ratio * advantages, clipped_ratio * advantages).shape)
         policy_reward = mx.minimum(ratio * advantages, clipped_ratio * advantages).sum(axis=-1) / n_groups
+        # print(policy_reward.shape)
     elif TrainConfig.SAMPLING == 'token':
-        # DAPO: Decoupled Clip and Dynamic sAmpling Policy Optimization: https://arxiv.org/pdf/2503.14476
+        # DAPO - Decoupled Clip and Dynamic sAmpling Policy Optimization: https://arxiv.org/pdf/2503.14476
         ratio = mx.exp(log_probs - old_log_probs)
         clipped_ratio = mx.clip(ratio, 1.0 - TrainConfig.EPSILON_MIN, 1.0 + TrainConfig.EPSILON_HIGH)
         policy_reward = mx.minimum(ratio * advantages, clipped_ratio * advantages)
@@ -513,28 +519,6 @@ def pad_sequences(sequences, pad_token_id):
 
     return mx.stack(padded_sequences)
 
-
-def interpolate_models(past_model: nn.Module, present_model: nn.Module, weight: float):
-    """
-    Linearly interpolate all parameters between two MLX models.
-    """
-    assert 0.0 <= weight <= 1.0, "weight must be in [0, 1]"
-
-    flt_past_model = tree_flatten(past_model)
-    flt_present_model = tree_flatten(present_model)
-    new_weights = []
-
-    # Iterate over all named parameters in both models
-    for (psk, psw), (prk, prw) in zip(flt_past_model, flt_present_model):
-        if isinstance(psw, str):
-            continue
-        assert psk == prk
-        new_weight = psw * (1 - weight) + prw * weight
-        new_weights.append((psk, new_weight))
-
-    return tree_unflatten(new_weights)
-
-
 def grpo_train_loop(
     model,
     model_old,
@@ -545,9 +529,7 @@ def grpo_train_loop(
     max_iters=3000,
     group_size=8,
     batch_size=2,
-    # epsilon=0.2,
-    beta=0.02,
-    update_every=10,
+    beta=0.0,
     max_ans_len=4,
     prev_iters=0,
     losses=[],
@@ -555,14 +537,15 @@ def grpo_train_loop(
     all_rewards=[],
     max_rewards=[],
     std_rewards=[],
-    total_prompt_tokens=[],
-    tool_call_complexity=[],
+    eval_rewards=[]
 ):
-    model_old.update(model.parameters())
+    
     model.train()
-    model_old.eval().freeze()
-    if model_ref:
+    if model_old is not None:
+        model_old.eval().freeze()
+    if model_ref is not None:
         model_ref.eval().freeze()
+    
     # Create a grad function for the trainable model
     loss_and_grad_fn = nn.value_and_grad(model, grpo_loss_fn)
     tot_max_score = sum(max_rewards)
@@ -579,99 +562,98 @@ def grpo_train_loop(
     else:
         pbar = range(prev_iters, max_iters, batch_size)
 
+    # Epoch loop
     for it in pbar:
-        # batch_prompts = []
-        # batch_answers = []
+        # Evaluation
+        if it % TrainConfig.EVAL_STEPS == 0:
+            eval_scores = evaluate(model_old)
+            eval_rewards.append([it, sum(eval_scores)/len(eval_scores)])
 
         # 1. Sample a batch of prompts
         batch_indices = [bi % len(train_set) for bi in range(it, it + batch_size)]
-        # np.random.randint(0, len(train_set), batch_size)
 
         # 2. Rollout: Generate G responses for each prompt using the old model
         rollout_tokens = []
         rollout_rewards = []
         rollout_a_toks = []
-        response_hist = []
 
+        # Batch loop
         for i in batch_indices:
             prompt_tokens = tokenizer.encode(train_set[i%len(train_set)]['prompt'])
-            ground_tool_call = train_set[i]["ground_tool_call"]
-            tool_call_complexity.append(train_set[i]["num_input_tools"])
             scorer = train_set[i]['scorer']
-            total_prompt_tokens.append(len(prompt_tokens))
             group_rewards = []
+            rollouts = []
 
-            for gitr in range(group_size*2):
-                # temp = [0.01, 0.9, 0.9, 0.9]
+            # Generate responses/rollouts
+            for gitr in range(group_size * 2):
                 # Generate a response
                 response = generate(
                     model_old,
                     tokenizer,
                     prompt_tokens,
                     max_tokens=max_ans_len,
-                    sampler=lambda x: mx.random.categorical(x, axis=-1),
+                    sampler=lambda x: mx.random.categorical(x / TrainConfig.TEMPERATURE, axis=-1),
                 )
 
-                # TODO: Move lead tokens from prompt_tokens to response
-                response_hist.append(response)
                 response_tokens = tokenizer.encode(response, add_special_tokens=False)
-
                 # Avoiding truncated answers
-                # if len(response_tokens) >= max_ans_len - 1:
-                    # print("Truncated answer generated. Skipping...", flush=True)
-                    # continue
+                if len(response_tokens) >= max_ans_len - 1:
+                    continue
 
                 # Embedding EOS token as model.generate removes it
                 response_tokens.append(tokenizer.eos_token_id)
                 reward = scorer(llm_gen=response)
 
-                if it % 5 == 0:
-                    print("ITERATION:", it, '| GROUP:', gitr)
-                    print(tokenizer.decode(prompt_tokens))
-                    # print(f"User question: {train_set[i]["messages"][1]['content']}")
-                    # print("--- RESPONSE ---")
-                    print(response)
-                    # print("--- GROUND ---")
-                    print(f"<tool_call>{json.dumps(ground_tool_call)}</tool_call>")
-                    print("REWARD:", reward)
-                    print('-'*30, flush=True)
-
                 # Getting unique rewards
                 # According to DAPO: we should get unique rewards that fall between (-1, 2]
-                if reward in group_rewards: # or reward == -1:
-                    continue
-
-                group_rewards.append(reward)
-                # Store data for the optimization step
-                full_sequence = mx.array(prompt_tokens + response_tokens)
-                rollout_tokens.append(full_sequence)
-                rollout_a_toks.append(mx.array(response_tokens))
+                # if reward in group_rewards:
+                #     continue
                 
-                if len(group_rewards) == group_size:
+                full_sequence = mx.array(prompt_tokens + response_tokens)
+                rollouts.append((reward, full_sequence, mx.array(response_tokens)))
+
+            # if it % 5 == 0:
+            #     print("ITERATION:", it, '| GROUP:', gitr)
+            #     print(tokenizer.decode(prompt_tokens))
+            #     # print(f"User question: {train_set[i]["messages"][1]['content']}")
+            #     # print("--- RESPONSE ---")
+            #     print(response)
+            #     # print("--- GROUND ---")
+            #     print(f"<tool_call>{json.dumps(ground_tool_call)}</tool_call>")
+            #     print("REWARD:", reward)
+            #     print('-'*30, flush=True)
+
+            # Sort rewards hi to low
+            rollouts = sorted(rollouts, key=lambda x: x[0], reverse=True)
+            # Pick rewards where we see a good reward distribution shift
+            p = -1
+            for i in range(len(rollouts)-group_size+1):
+                reward_slice = [x[0] for x in rollouts[i:i+group_size]]
+                if reward_slice[0] != reward_slice[-1]:
+                    p = i
                     break
-
-                # if len(group_rewards) > 1 and max(group_rewards) == 2:
-                #     print("Best result found, breaking iteration", flush=True)
-                #     break
-
-            if not group_rewards:
-                # print("No valid rewards found in this batch. Skipping...")
+            if p == -1:
+                # print(f"No diversity in group rewards {[x[0] for x in rollouts]}. Skipping...")
                 continue
-            if min(group_rewards) == max(group_rewards):
-                # print("No diversity in group rewards. Skipping...")
-                continue
-            
-            # if min(group_rewards) == max(group_rewards) and max(group_rewards) < 0:
-            #     print(f"Group max: {min(group_rewards)} and group min {min(group_rewards) }. Skipping...")
+
+            rollouts = rollouts[p:p+group_size]
+            # Store data for the optimization step
+            group_rewards.extend([x[0] for x in rollouts])
+            rollout_tokens.extend([x[1] for x in rollouts])
+            rollout_a_toks.extend([x[2] for x in rollouts])
+
+            # if not group_rewards:
+            #     # print("No valid rewards found in this batch. Skipping...")
             #     continue
-
-            # print(group_rewards)
+            # if min(group_rewards) == max(group_rewards):
+            #     # print("No diversity in group rewards. Skipping...")
+            #     continue
+            
             all_rewards.append(np.mean(group_rewards).item())
             tot_score += sum(group_rewards)
             max_rewards.append(max(group_rewards))
             tot_max_score += max(group_rewards)
             rollout_rewards.append(mx.array(group_rewards))
-
 
         if not rollout_rewards:
             # print("Empty rollout rewards. Skipping...", flush=True)
@@ -682,9 +664,6 @@ def grpo_train_loop(
         for rewards in rollout_rewards:
             mean_reward = mx.mean(rewards)
             std_reward = mx.sqrt(mx.var(rewards)) + 1e-8  # Add epsilon for stability
-            # DR GRPO: Do not divide by std reward
-            # adv = (rewards - mean_reward)
-            # Casual reward
             adv = (rewards - mean_reward) / std_reward
             std_rewards.append(std_reward.item())
             advantages.append(adv)
@@ -694,53 +673,41 @@ def grpo_train_loop(
         rollout_a_toks_padded = pad_sequences(rollout_a_toks, tokenizer.pad_token_id)
 
         # Optimization Step
-        loss, grads = loss_and_grad_fn(
-            model,
-            model_old,
-            model_ref,
-            rollout_tokens_padded,
-            rollout_a_toks_padded,
-            advantages,
-            beta,
-            # epsilon,
-            tokenizer.pad_token_id,
-        )
-
-        # if not mx.isfinite(loss):
-        #     print(f"!SKIPPING! -- Loss was: {loss.item():.3f}")
-        #     continue
-        # elif abs(loss.item()) > 100:
-        #     print(f"!!!!LOSS is too high: {loss.item():.6f}")
-        #     for at, sc in zip(response_tokens, rollout_rewards):
-        #         print(f"MODEL REPLY: {sc} -> {at}")
-        #     raise NotImplementedError
-
-        clipped_grads, total_norm = optim.clip_grad_norm(grads, max_norm=1.0)
-        optimizer.update(model, clipped_grads)
-        mx.eval(model.parameters(), optimizer.state)
-
-        losses.append(loss.item())
-        learning_rates.append(optimizer.learning_rate.item())
-        tot_loss += loss.item()
-        if TrainConfig.TQDM:
-            rwds = list(map(lambda x: round(x, 2), all_rewards[-5:]))
-            pbar.set_description(
-                f"Loss: {losses[-1]:.4f} | {tot_loss / (it + 1):.4f} | LR: {optimizer.learning_rate.item():1.6f} | Score: {tot_score / ((it + 1) * group_size):.2f} | Max {tot_max_score / (it + 1):.2f} | Rewards: {rwds}"
+        _loss = 0
+        for _ in range(TrainConfig.NUM_ITER):
+            loss, grads = loss_and_grad_fn(
+                model=model,
+                model_old=model_old if TrainConfig.UPDATE_WEIGHT != 1 else model,
+                model_ref=model_ref,
+                io_toks=rollout_tokens_padded,
+                a_toks=rollout_a_toks_padded,
+                advantages=advantages,
+                beta=beta,
+                pad_tok_id=tokenizer.pad_token_id,
             )
-        del grads, clipped_grads, total_norm, loss #, policy_reward, kl_div
+            clipped_grads, total_norm = optim.clip_grad_norm(grads, max_norm=TrainConfig.GRAD_NORM)
+            optimizer.update(model, clipped_grads)
+            mx.eval(model.parameters(), optimizer.state)
+            _loss += loss.item()
+
+        losses.append(_loss)
+        learning_rates.append(optimizer.learning_rate.item())
+        tot_loss += _loss
+
+        if TrainConfig.TQDM:
+            rwds = list(map(lambda x: round(x, 2), all_rewards[-3:]))
+            pbar.set_description(
+                f"Loss: {losses[-1]:.4f} | {tot_loss / (it + 1):.4f} | LR: {optimizer.learning_rate.item():1.6f} | Score: {tot_score / ((it + 1) * group_size):.2f} | Max {tot_max_score / (it + 1):.2f} | Eval: {eval_rewards[-1][-1]:.2f} | Rewards: {rwds}"
+            )
+        del grads, clipped_grads, total_norm, loss
 
         # Sync old model weights
-        if TrainConfig.UPDATE_WEIGHT > 0:
-            if TrainConfig.UPDATE_WEIGHT == 1:
-                model_old.update(model.parameters())
-            else:
-                new_weights = interpolate_models(model_old, model, TrainConfig.UPDATE_WEIGHT)
-                model_old.update(new_weights)
+        if TrainConfig.UPDATE_WEIGHT != 1 and it % TrainConfig.UPDATE_WEIGHT == 0:
+            model_old.update(model.parameters())
             model_old.eval().freeze()
-        # print(f"\nIter {it+1}: Synced old model weights.")
+            print(f"\nIter {it+1}: Synced old model weights.")
 
         if it % TrainConfig.SAVE_FREQ == 0:
-            # prog_graph(losses, max_rewards)
             save_state(
                 it,
                 losses,
@@ -748,25 +715,19 @@ def grpo_train_loop(
                 all_rewards,
                 max_rewards,
                 std_rewards,
-                tool_call_complexity,
-                total_prompt_tokens,
+                eval_rewards,
                 model,
-                model_old,
                 optimizer,
                 path=TrainConfig.SAVE_PATH,
             )
 
-        if it % 5 == 0:
+        if it % 10 == 0:
             prog_graph(
                 it,
                 losses,
                 learning_rates,
                 all_rewards,
-                max_rewards,
-                std_rewards,
-                tool_call_complexity,
-                total_prompt_tokens,
-                window=25,
+                eval_rewards,
                 save_path=TrainConfig.SAVE_PATH,
                 plot=False,
             )
@@ -786,7 +747,6 @@ losses, all_rewards, max_rewards = grpo_train_loop(
     optimizer=optimizer,
     train_set=train_ds,
     max_ans_len=TrainConfig.GEN_LEN,
-    # update_every=TrainConfig.UPDATE_FREQ,
     group_size=TrainConfig.GROUP_SIZE,
     beta=TrainConfig.BETA,
     batch_size=TrainConfig.BATCH_SIZE,
@@ -797,6 +757,5 @@ losses, all_rewards, max_rewards = grpo_train_loop(
     all_rewards=all_rewards,
     max_rewards=max_rewards,
     std_rewards=std_rewards,
-    tool_call_complexity=tool_call_complexity,
-    total_prompt_tokens=total_prompt_tokens,
+    eval_rewards=eval_rewards
 )

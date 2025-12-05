@@ -3,12 +3,13 @@ from ast import literal_eval
 import json
 from copy import deepcopy
 from functools import partial
+from difflib import SequenceMatcher
 
 from data.utils import tool_shuffle
 from utils.tokenizer import TOOL_TEMPLATE
 from utils.webtool import tool_call_extract
 from data.utils import THINK_STRINGS
-from data.grpo.salseforce_tool import tool_scorer
+# from data.grpo.salseforce_tool import tool_scorer
 
 # Example usage:
 # print(func_call_to_json('coffee_shop.find_nearby("San Francisco", amenities="Wi-Fi", rating=5)'))
@@ -158,10 +159,67 @@ def gorilla_openfun(tokenizer):
 # data = gorilla_openfun(TOOL_TEMPLATE)
 
 
+def tool_scorer(llm_gen, tools_ground, def_tools, verbose=False):
+    try:
+        return _tool_scorer(llm_gen, tools_ground, def_tools, verbose)
+    except:
+        return -1, None
+
+
+def _tool_scorer(llm_gen, tools_ground, def_tools, verbose=False):
+    def uniform(s:str):
+        return sorted(list(s.lower()))
+
+    if verbose:
+        print("Gen tools:", type(llm_gen), json.dumps(llm_gen))
+        print("Ground tools:", type(tools_ground), json.dumps(tools_ground))
+
+    assert isinstance(llm_gen, str)
+    tools_gen = tool_call_extract(llm_gen)
+    if verbose:
+        print("Parsed toolcall:", type(tools_gen), json.dumps(tools_gen))
+    tool_ground_names = [t['name'] for t in tools_ground]
+    # tools_ground_args = {t['name']:t['arguments'] for t in tools_ground}
+    # req_ground_attribs = {t['name']:t.get('parameters', {}).get('required', []) for t in def_tools}
+    total_score = 0
+
+    if tools_gen is None:
+        return -1, None
+    if len(tools_gen) != len(tools_ground):
+        return -1, None
+
+    for tool in tools_gen:
+        # Invalid tool calling format
+        if not isinstance(tool, dict):
+            return -1, None
+        # Name args missing
+        if 'name' not in tool or 'arguments' not in tool:
+            return -1, None
+        # Not a dict
+        if not isinstance(tool['arguments'], dict):
+            return -1, None
+        # Invalid tool call
+        if tool['name'] not in tool_ground_names:
+            return -1, None
+
+    a = str(tools_gen)
+    b = str(tools_ground)
+
+    if uniform(a) == uniform(b):
+        return 2, tools_gen
+
+    s = SequenceMatcher(None, a, b)
+    total_score += s.ratio() + (s.find_longest_match().size / len(b))
+    return max(total_score, -1), tools_gen
+
+
+
 def scorer(llm_gen, tools_ground, def_tools):
     # Adding think tag (prefilled in dataset)
     # Tool score
-    tool_score, tools_gen = tool_scorer(llm_gen, tools_ground)
+    llm_gen = "<tool_call>" + llm_gen
+    # print("LLM_GEN:", llm_gen)
+    tool_score, tools_gen = tool_scorer(llm_gen, tools_ground, def_tools)
     if tool_score <= 0:
         return -1
     return tool_score
