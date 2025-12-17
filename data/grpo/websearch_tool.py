@@ -242,7 +242,7 @@ if __name__ == '__main__':
         )
 
     ds = tool_calling_traces(tokenizer)
-    ds = list(filter(lambda x: 512 <= total_tokens(x['prompt']) <= 1024+784, ds))
+    ds = list(filter(lambda x: 512 <= total_tokens(x['prompt']) <= 1536, ds))
     from collections import Counter
     fc_names = []
     for d in ds:
