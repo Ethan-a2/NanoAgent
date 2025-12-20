@@ -17,6 +17,7 @@ from pathlib import Path
 from collections import defaultdict
 import pickle
 from functools import partial
+from copy import deepcopy
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -27,13 +28,14 @@ import numpy as np
 import tqdm
 import random
 from mlx.utils import tree_flatten, tree_unflatten, tree_map
-from mlx_lm import generate, load
+from mlx_lm import generate, load, convert
 from mlx_lm.utils import load_model, save_model, dequantize_model
 from data.grpo.salseforce_tool import salesfores_toolcall
 from data.grpo.websearch_tool import tool_calling_traces
 from data.grpo.calculate import calculate_math
 from data.grpo.gorilla_tool import gorilla_openfun
 from scipy.ndimage import gaussian_filter1d
+from utils.utils import sampler
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 plt.ioff()
@@ -54,26 +56,31 @@ class TrainConfig:
     SAVE_FREQ = 50
     LOAD_PREV = False
     LEARNING_RATE = 1e-5
-    WEIGHT_DECAY = 0.01
-    EPSILON_MIN = 0.4
-    EPSILON_HIGH = 0.4
+    WEIGHT_DECAY = 0 # 0.01
+    EPSILON_MIN = 0.3
+    EPSILON_HIGH = 0.3
     GROUP_SIZE = 4
-    WARMUP_STEPS = 300
+    WARMUP_STEPS = 150 # 300
     DECAY_STEPS = 100
     BETA = 0 # 0.01
     UPDATE_WEIGHT = 1 # 16 or 8
     EVAL_STEPS = 50
     NUM_ITER = 1
     GRAD_ACCUM = 1
-    GRAD_NORM = 1
+    GRAD_NORM = 0.1
     REF_MODEL_MIXUP_ALPHA = 1 # 0.6
     MAX_INPUT_LEN = 1536
     SAVE_PATH = "weights/NanoAgent-135M-grpo-web"
     DATA_PATH = "data/datasets/grpo_unordered_cache.pickle"
+    MODEL = "quwsarohi/NanoAgent-135M"
+    QUANTIZATION = 8
+    GRADIENT_CHECKPOINT_LAYERS = 6
     TQDM = True
     SAMPLING = "sequence"
-    SOFT_CLIP = True # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
-    TEMPERATURE = 0.8 # <= 0.9
+    SOFT_CLIP = False # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
+    TEMPERATURE = 0.9 # <= 0.9 when MIN_P not used
+    MIN_P = 0.1
+    TOP_P = 0.9
 
 
 # Token Sampling: DAPO - https://arxiv.org/pdf/2503.14476
@@ -84,6 +91,7 @@ assert 0 <= TrainConfig.UPDATE_WEIGHT
 assert 0 < TrainConfig.GRAD_NORM
 assert 1 <= TrainConfig.GRAD_ACCUM
 assert 1 <= TrainConfig.BATCH_SIZE
+assert 0 <= TrainConfig.WEIGHT_DECAY
 
 
 config_dict = {
@@ -94,27 +102,37 @@ config_dict = {
 print(json.dumps(config_dict, indent=2))
 
 # The model that will be trained
-MODEL_PATH = "weights/NanoAgent-135M-8bit"
+# MODEL_PATH = "weights/NanoAgent-135M-8bit"
 
-model, _, model_config = load(MODEL_PATH, return_config=True)
+cache_mlx_path = os.path.join('weights', TrainConfig.MODEL.split('/')[-1])
+if not os.path.exists(cache_mlx_path):
+    print('Downloading model and creating mlx model cache at:', cache_mlx_path)
+    convert(TrainConfig.MODEL, mlx_path=cache_mlx_path, q_bits=TrainConfig.QUANTIZATION)
+    print("Restart training")
+    sys.exit()
+
+
+model, _, model_config = load(cache_mlx_path, return_config=True)
+
+if TrainConfig.QUANTIZATION is not None:
+    nn.quantize(model, group_size=64, bits=TrainConfig.QUANTIZATION)
+    print(f"Model quantized to {TrainConfig.QUANTIZATION} bits")
 model.train()
 
 if TrainConfig.UPDATE_WEIGHT == 1:
     model_old = None
 else:
-    model_old = load(MODEL_PATH)[0]
+    model_old = deepcopy(model)
     model_old.eval().freeze()
 
 if TrainConfig.BETA > 0:
     # The reference model for KL-div (freezed)
-    model_ref = load(MODEL_PATH)[0]
-    # nn.quantize(model_ref)
+    model_ref = deepcopy(model)
     model_ref.eval().freeze()
 else:
     model_ref = None
 
 tokenizer = get_tokenizer("HuggingFaceTB/SmolLM2-135M", add_bos=False)
-
 
 def cosine_decay_with_warmup(
     max_lr: float,
@@ -238,7 +256,7 @@ else:
         f"Dataset loaded from path: {TrainConfig.DATA_PATH} | Dataset length: {len(train_ds)}"
     )
 
-# sys.exit()
+
 
 def evaluate(eval_model, samples, runs=4, temp=0.):
     # return [0]
@@ -384,9 +402,12 @@ else:
         eval_rewards
     ) = 0, [], [], [], [], [], []
 
-tot_layers = len(model.layers)
-for layer in model.layers[:6]:
-    grad_checkpoint(layer)
+
+if TrainConfig.GRADIENT_CHECKPOINT_LAYERS is not None:
+    tot_layers = len(model.layers)
+    nlayers = min(tot_layers, TrainConfig.GRADIENT_CHECKPOINT_LAYERS)
+    for layer in model.layers[:nlayers]:
+        grad_checkpoint(layer)
 
 print(
     f"Memory consumption: {mx.get_active_memory() / 1024 / 1024:.2f} | {mx.get_peak_memory() / 1024 / 1024:.2f} Megabytes"
@@ -410,7 +431,7 @@ def save_state(
     mx.save_safetensors(
         os.path.join(path, "optimizer.safetensors"), dict(tree_flatten(optimizer.state))
     )
-    save_model(save_path=path, model=dequantize_model(model))
+    save_model(save_path=path, model=dequantize_model(deepcopy(model)))
 
     train_info = {
         "training_params": {
@@ -509,14 +530,15 @@ def grpo_loss_fn(
     else:
         old_log_probs = mx.stop_gradient(log_probs)
 
-    total_tokens = pad_mask.sum()
+    # total_tokens = pad_mask.sum()
     n_groups = io_toks.shape[0]
+    total_tokens = n_groups * TrainConfig.GEN_LEN
 
     # PPO-clip objective
     # Ratio is converted from log values using exp(log)
     if TrainConfig.SAMPLING == 'sequence':
         # GSPO Equation: https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/gspo-reinforcement-learning?q=learning+rage
-        ratio = ((log_probs - old_log_probs) * pad_mask).sum(axis=-1) / pad_mask.sum(axis=-1)
+        ratio = ((log_probs - old_log_probs) * pad_mask).sum(axis=-1) / TrainConfig.GEN_LEN
         ratio = mx.exp(ratio)
         # print("Ratio:", ratio)
         if not TrainConfig.SOFT_CLIP:
@@ -684,7 +706,7 @@ def grpo_train_loop(
                     tokenizer,
                     prompt_tokens,
                     max_tokens=max_ans_len,
-                    sampler=lambda x: mx.random.categorical(x / TrainConfig.TEMPERATURE, axis=-1),
+                    sampler=partial(sampler, temperature=TrainConfig.TEMPERATURE, min_p=TrainConfig.MIN_P, top_p=TrainConfig.TOP_P) #lambda x: mx.random.categorical(x / TrainConfig.TEMPERATURE, axis=-1),
                 )
 
                 response_tokens = tokenizer.encode(response, add_special_tokens=False)
@@ -722,7 +744,7 @@ def grpo_train_loop(
                     break
 
             if len(valid_rollout_indices) <= 1 or (min(valid_rollout_rewards) == max(valid_rollout_rewards)):
-                # print(f"\nNo diversity in group rewards: {[round(x[0], 2) for x in rollouts]}. Skipping...")
+                print(f"\nNo diversity in group rewards: {[round(x[0], 2) for x in rollouts]}. Skipping...")
                 continue
 
             rollouts = [rollouts[p] for p in valid_rollout_indices]
