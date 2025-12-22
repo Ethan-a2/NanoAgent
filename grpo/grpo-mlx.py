@@ -55,32 +55,33 @@ class TrainConfig:
     GEN_LEN = 64
     SAVE_FREQ = 50
     LOAD_PREV = False
-    LEARNING_RATE = 1e-5
+    LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 0 # 0.01
     EPSILON_MIN = 0.3
     EPSILON_HIGH = 0.3
     GROUP_SIZE = 4
-    WARMUP_STEPS = 150 # 300
+    WARMUP_STEPS = 100 # 300
     DECAY_STEPS = 100
     BETA = 0 # 0.01
     UPDATE_WEIGHT = 1 # 16 or 8
     EVAL_STEPS = 50
     NUM_ITER = 1
     GRAD_ACCUM = 1
-    GRAD_NORM = 0.1
+    GRAD_NORM = 1
     REF_MODEL_MIXUP_ALPHA = 1 # 0.6
     MAX_INPUT_LEN = 1536
-    SAVE_PATH = "weights/NanoAgent-135M-grpo-web"
+    SAVE_PATH = "weights/NanoAgent-135M-grpo-web-hilr"
     DATA_PATH = "data/datasets/grpo_unordered_cache.pickle"
     MODEL = "quwsarohi/NanoAgent-135M"
     QUANTIZATION = 8
     GRADIENT_CHECKPOINT_LAYERS = 6
     TQDM = True
-    SAMPLING = "sequence"
-    SOFT_CLIP = False # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
-    TEMPERATURE = 0.9 # <= 0.9 when MIN_P not used
-    MIN_P = 0.1
-    TOP_P = 0.9
+    SAMPLING = "token"
+    SOFT_CLIP = True # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
+    TEMPERATURE = 0.6 # <= 0.9 when MIN_P not used
+    MIN_P = None
+    TOP_K = 10
+    TOP_P = None #0.95
 
 
 # Token Sampling: DAPO - https://arxiv.org/pdf/2503.14476
@@ -590,7 +591,7 @@ def grpo_loss_fn(
 
     # The objective is to maximize this, so we return the negative for minimization
     if TrainConfig.SAMPLING == 'token':
-        loss = -1 * ((token_policy_reward.sum() / total_tokens) / n_groups)
+        loss = -1 * ((token_policy_reward.sum(axis=-1) / total_tokens).sum(axis=-1) / n_groups)
     else:
         loss = -1 * (token_policy_reward.sum() / n_groups)
     return loss
@@ -706,7 +707,7 @@ def grpo_train_loop(
                     tokenizer,
                     prompt_tokens,
                     max_tokens=max_ans_len,
-                    sampler=partial(sampler, temperature=TrainConfig.TEMPERATURE, min_p=TrainConfig.MIN_P, top_p=TrainConfig.TOP_P) #lambda x: mx.random.categorical(x / TrainConfig.TEMPERATURE, axis=-1),
+                    sampler=partial(sampler, temperature=TrainConfig.TEMPERATURE, min_p=TrainConfig.MIN_P, top_p=TrainConfig.TOP_P, top_k=TrainConfig.TOP_K) #lambda x: mx.random.categorical(x / TrainConfig.TEMPERATURE, axis=-1),
                 )
 
                 response_tokens = tokenizer.encode(response, add_special_tokens=False)
@@ -744,11 +745,18 @@ def grpo_train_loop(
                     break
 
             if len(valid_rollout_indices) <= 1 or (min(valid_rollout_rewards) == max(valid_rollout_rewards)):
-                print(f"\nNo diversity in group rewards: {[round(x[0], 2) for x in rollouts]}. Skipping...")
+                # print(f"\nNo diversity in group rewards: {[round(x[0], 2) for x in rollouts]}. Skipping...")
+                # for re, fs, rt in rollouts:
+                    # print(f"{re:.2f}: {tokenizer.decode(rt.tolist())}")
                 continue
 
             rollouts = [rollouts[p] for p in valid_rollout_indices]
             print("\nRollouts:", [round(x[0], 2) for x in rollouts])
+            # print(train_set[i%len(train_set)]['prompt'])
+            print(train_set[i%len(train_set)]['ground_tool_call'])
+            for re, fs, rt in rollouts:
+                print(f"{re:.2f}: {tokenizer.decode(rt.tolist())}")
+            print()
             # Store data for the optimization step
             group_rewards.extend([x[0] for x in rollouts])
             rollout_tokens.extend([x[1] for x in rollouts])

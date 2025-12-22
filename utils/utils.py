@@ -17,10 +17,17 @@ def min_p_cal(probs, p):
     # Zero out filtered probs
     return mask
 
+def top_k_cal(probs, k):
+    topk_vals = mx.topk(probs, k+1)
+    min_top_k = mx.min(topk_vals)
+    mask = probs > min_top_k
+    return mask
+
 def sampler(
     logits: mx.array,
     min_p: float = None,
     top_p: float = None,
+    top_k: int = None,
     temperature: float = 1.0,
 
 ) -> mx.array:
@@ -48,8 +55,12 @@ def sampler(
         min_p_mask = min_p_cal(probs, min_p)
     else:
         min_p_mask = 1
+    if top_k:
+        top_k_mask = top_k_cal(probs, top_k)
+    else:
+        top_k_mask = 1
     
-    probs = probs * top_p_mask * min_p_mask
+    probs = probs * top_p_mask * min_p_mask * top_k_mask
     # Renormalize
     probs = probs / mx.sum(
         probs, axis=-1, keepdims=True

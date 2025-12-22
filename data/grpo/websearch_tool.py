@@ -226,8 +226,8 @@ def scorer(llm_gen, tools_ground, def_tools):
     llm_gen = "<tool_call>" + llm_gen
     # print("LLM_GEN:", llm_gen)
     tool_score, tools_gen = tool_scorer(llm_gen, tools_ground, def_tools)
-    if tool_score <= 0:
-        return -1
+    # if tool_score <= 0:
+        # return -1
     return tool_score
 
 

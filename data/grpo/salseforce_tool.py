@@ -122,11 +122,11 @@ def tool_scorer(llm_gen, tools_ground, def_tools, verbose=False):
     try:
         return _tool_scorer(llm_gen, tools_ground, def_tools, verbose)
     except Exception as E:
-        print("Exception:", E)
+        print("Exception:", E, '| Input:', llm_gen)
         return -1, None
 
 
-def _tool_scorer(llm_gen, tools_ground, def_tools, verbose=False):
+def _tool_scorer(llm_gen, tools_ground, def_tools, threshold, verbose=False):
     def uniform(s:str):
         return sorted(list(s.lower()))
 
@@ -145,36 +145,42 @@ def _tool_scorer(llm_gen, tools_ground, def_tools, verbose=False):
     args_score = []
 
     if tools_gen is None:
-        return -1, None
+        return -2, None
     if len(tools_gen) != len(tools_ground):
-        return -1, None
+        return -2, None
+
+    # Scoring:
+    # -2: Major mistakes -> Wrong format | imaginary tools | invalid tool call signature
+    # -1: Minor mistakes -> wrong arguments | 
 
     for tool in tools_gen:
         # Invalid tool calling format
         if not isinstance(tool, dict):
-            return -1, None
-        # Name args missing
+            return -2, None
+        # Name/args missing
         if 'name' not in tool or 'arguments' not in tool:
-            return -1, None
+            return -2, None
         # Not a dict
         if not isinstance(tool['arguments'], dict):
-            return -1, None
+            return -2, None
         # Invalid tool call
         if tool['name'] not in tool_ground_names:
-            return -1, None
+            return -2, None
         # Invalid arguments
         for param_name, gen_val in tool['arguments'].items():
             if param_name not in tools_ground_args[tool['name']]:
-                return -1, None
+                return -2, None
             ground_val = tools_ground_args[tool['name']][param_name]
 
             sim_score = cosine_similarity_tfidf(str(gen_val), str(ground_val))
-            # sim_score = sim_score if sim_score >= 0.9 else 0
+            threshold = 0.5
+            sim_score = ((sim_score - threshold) / (1 - threshold)) if sim_score >= threshold else 0
             args_score.append(sim_score if type(gen_val) is type(ground_val) else 0)
             
         # TODO: Missing required attribs
         for param_name in req_ground_attribs[tool['name']]:
             if param_name not in tool['arguments']:
+                # print(param_name, 'missing in', llm_gen)
                 total_score += -0.25
 
     a = str(tools_gen)
@@ -270,17 +276,17 @@ def scorer(llm_gen, tools_ground, def_tools, think=True):
     
     # Tool score
     tool_score, tools_gen = tool_scorer(llm_gen, tools_ground, def_tools)
-    if tool_score <= 0:
-        return -1
-
     if not think:
+        return tool_score
+    
+    if tool_score <= 0:
         return tool_score
 
     # think_score = thinking_scorer(llm_gen, tools_gen, def_tools)
     think_score = int(thinking_validate(llm_gen))
-    if think_score <= 0:
+    # if think_score <= 0:
         # print("Invalid thinking", flush=True)
-        return -1
+        # return tool_score
 
     return tool_score + think_score
 
