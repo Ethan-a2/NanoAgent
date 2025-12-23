@@ -1,4 +1,5 @@
 import mlx.core as mx
+from mlx.utils import tree_flatten, tree_unflatten
 
 
 def top_p_cal(probs, p):
@@ -70,3 +71,31 @@ def sampler(
     return mx.random.categorical(_logits)
 
 
+def grad_checkpoint(layer):
+    """
+    Update all instances of type(layer) to use gradient checkpointing.
+    """
+    fn = type(layer).__call__
+
+    def checkpointed_fn(model, *args, **kwargs):
+        def inner_fn(params, *args, **kwargs):
+            model.update(params)
+            return fn(model, *args, **kwargs)
+
+        return mx.checkpoint(inner_fn)(model.trainable_parameters(), *args, **kwargs)
+
+    type(layer).__call__ = checkpointed_fn
+
+
+def split_grads(grads):
+    grads = tree_flatten(grads)
+    special_layers = ['embed', 'lm_head', 'softmax', 'output', 'classifier']
+    weights, biases = [], []
+    for k, v in grads:
+        if v.ndim == 2 and all([name not in k for name in special_layers]):
+            weights.append((k, v))
+        else:
+            biases.append((k, v))
+    weights = tree_unflatten(weights)
+    biases = tree_unflatten(biases)
+    return weights, biases

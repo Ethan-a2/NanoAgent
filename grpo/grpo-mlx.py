@@ -35,7 +35,7 @@ from data.grpo.websearch_tool import tool_calling_traces
 from data.grpo.calculate import calculate_math
 from data.grpo.gorilla_tool import gorilla_openfun
 from scipy.ndimage import gaussian_filter1d
-from utils.utils import sampler
+from utils.utils import sampler, grad_checkpoint
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 plt.ioff()
@@ -197,22 +197,6 @@ optimizer = optim.AdamW(
 # optimizer = optim.Muon(
 #     learning_rate=scheduler, weight_decay=TrainConfig.WEIGHT_DECAY
 # )
-
-
-def grad_checkpoint(layer):
-    """
-    Update all instances of type(layer) to use gradient checkpointing.
-    """
-    fn = type(layer).__call__
-
-    def checkpointed_fn(model, *args, **kwargs):
-        def inner_fn(params, *args, **kwargs):
-            model.update(params)
-            return fn(model, *args, **kwargs)
-
-        return mx.checkpoint(inner_fn)(model.trainable_parameters(), *args, **kwargs)
-
-    type(layer).__call__ = checkpointed_fn
 
 
 def total_tokens(data):

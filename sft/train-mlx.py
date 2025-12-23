@@ -4,39 +4,40 @@
 # Linear example: https://ml-explore.github.io/mlx/build/html/examples/linear_regression.html
 
 import json
-import os
+import os, sys
 import random
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from copy import deepcopy
 
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
 from datasets import load_dataset
 from mlx.utils import tree_flatten, tree_unflatten
-from mlx_lm import generate, load
-from mlx_lm.utils import load_model, save_model
+from mlx_lm import generate, load, convert
+from mlx_lm.utils import load_model, save_model, dequantize_model
 from tqdm import tqdm
 from utils.tokenizer import get_tokenizer
+from utils.utils import grad_checkpoint
 
 
 @dataclass
 class TrainConfig:
     # Base model config
-    SIZE = "135M"
+    SIZE = "360M"
     VERSION = "instruct"
     TRAIN_TYPE = "sft"
     # Iterations
     EPOCHS = 2.1
     BATCH_SIZE = 1
     CONTEXT_LEN = 1024 * 2
-    # Weight checkpoint
     LOAD_PREV = False
     # Learning rate
     MIN_LEARNING_RATE = 0  # 5e-8
-    WARMUP_STEPS = int(0.1 * 6656) #500
+    WARMUP_STEPS = int(0.1 * 75000)
     # SQRT Scaling rule: lr_new = lr * batch_scale = 3e-3 * sqrt(1/128) = ~2.5e-04
     # Ref:
     # * On the SDEs and Scaling Rules for Adaptive Gradient Algorithms
@@ -45,9 +46,10 @@ class TrainConfig:
     # Continued SFT LR: 1e-5
     MAX_LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 0.1
-
+    QUANTIZATION = 8
+    GRADIENT_CHECKPOINT_LAYERS = None
     TRAIN_LABEL = ("c" if VERSION == "instruct" else "") + TRAIN_TYPE
-    SAVE_PATH = f"weights/SmolLM2-{SIZE}-mlx-{TRAIN_LABEL}-v0-think"
+    SAVE_PATH = f"weights/SmolLM2-{SIZE}-mlx-{TRAIN_LABEL}-v12"
 
 
 config_dict = {
@@ -61,16 +63,32 @@ assert TrainConfig.TRAIN_TYPE in ["sft", "dft"]
 # Use if model is not present
 # hf_path = f"HuggingFaceTB/SmolLM2-{TrainConfig.SIZE}-Instruct"
 # convert(hf_path=hf_path, mlx_path=f'weights/SmolLM2-{TrainConfig.SIZE}-mlx-instruct')
+# sys.exit()
 
-# model_path = f"weights/SmolLM2-{TrainConfig.SIZE}-mlx-{TrainConfig.VERSION}"
-model_path = "weights/NanoAgent-135M"
+model_path = f"weights/SmolLM2-{TrainConfig.SIZE}-mlx-{TrainConfig.VERSION}"
 model, tokenizer = load(model_path)
 print(f"Model path: weights/SmolLM2-{TrainConfig.SIZE}-mlx-{TrainConfig.VERSION}")
 # model.generation_config.pad_token_id = tokenizer.pad_token_id
 # model.generation_config.eos_token_id = tokenizer.eos_token_id
+
+if TrainConfig.QUANTIZATION is not None:
+    nn.quantize(model, group_size=64, bits=TrainConfig.QUANTIZATION)
+    print(f"Model quantized to {TrainConfig.QUANTIZATION} bits")
 model.train()
 tokenizer = get_tokenizer(f"HuggingFaceTB/SmolLM2-{TrainConfig.SIZE}", add_bos=False)
+
+
 # Gradient checkpointing: https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/tuner/trainer.py
+if TrainConfig.GRADIENT_CHECKPOINT_LAYERS is not None:
+    tot_layers = len(model.layers)
+    nlayers = min(tot_layers, TrainConfig.GRADIENT_CHECKPOINT_LAYERS)
+    for layer in model.layers[:nlayers]:
+        grad_checkpoint(layer)
+
+
+print(
+    f"Memory consumption: {mx.get_active_memory() / 1024 / 1024:.2f} | {mx.get_peak_memory() / 1024 / 1024:.2f} Megabytes"
+)
 
 
 class Dataset:
@@ -252,18 +270,16 @@ def source_dist(dataset):
 
 # for t in tokenizer.encode("<|im_start|>assistant\n"):
 #     print(t, tokenizer.decode(t))
-
-# import sys
 # sys.exit()
 
 train_ds = load_dataset(
     "json",
-    data_files="data/datasets/SmolLM2_base_train_think_v0.jsonl",
+    data_files="data/datasets/Smollm2_base_train_v12.jsonl",
     split="train",
 )
 test_ds = load_dataset(
     "json",
-    data_files="data/datasets/SmolLM2_base_test_think_v0.jsonl",
+    data_files="data/datasets/Smollm2_base_test_v12.jsonl",
     split="train",
 )
 # dataset = dataset.sort('ctx_len')
@@ -374,7 +390,7 @@ def save_state(
     mx.save_safetensors(
         os.path.join(path, "optimizer.safetensors"), dict(tree_flatten(optimizer.state))
     )
-    save_model(save_path=path, model=model)
+    save_model(save_path=path, model=dequantize_model(deepcopy(model)))
 
     train_info = {
         "training_params": {
