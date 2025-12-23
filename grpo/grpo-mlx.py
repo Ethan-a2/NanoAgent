@@ -55,7 +55,7 @@ class TrainConfig:
     GEN_LEN = 64
     SAVE_FREQ = 50
     LOAD_PREV = False
-    LEARNING_RATE = 1e-4
+    LEARNING_RATE = 5e-5
     WEIGHT_DECAY = 0 # 0.01
     EPSILON_MIN = 0.3
     EPSILON_HIGH = 0.3
@@ -478,7 +478,8 @@ def interpolate_models(past_model: nn.Module, present_model: nn.Module, weight: 
     return tree_unflatten(new_weights)
 
 
-def soft_gate(x, advantages, t_pos=1, t_neg=1.05):
+def soft_gate(x, advantages, t_pos=1, t_neg=1.4):
+    # SAPO default: t_pos=1, t_neg=1.05
     temp = mx.where(advantages > 0, t_pos, t_neg)
     return mx.sigmoid(temp * (x-1)) * (4 / temp)
 
