@@ -35,7 +35,7 @@ from data.grpo.websearch_tool import tool_calling_traces
 from data.grpo.calculate import calculate_math
 from data.grpo.gorilla_tool import gorilla_openfun
 from scipy.ndimage import gaussian_filter1d
-from utils.utils import sampler, grad_checkpoint
+from utils.utils import sampler, grad_checkpoint, split_grads
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 plt.ioff()
@@ -55,33 +55,33 @@ class TrainConfig:
     GEN_LEN = 64
     SAVE_FREQ = 50
     LOAD_PREV = False
-    LEARNING_RATE = 5e-5
-    WEIGHT_DECAY = 0 # 0.01
+    LEARNING_RATE = 1e-5
+    WEIGHT_DECAY = 0
     EPSILON_MIN = 0.3
     EPSILON_HIGH = 0.3
     GROUP_SIZE = 4
-    WARMUP_STEPS = 100 # 300
+    WARMUP_STEPS = 100
     DECAY_STEPS = 100
     BETA = 0 # 0.01
-    UPDATE_WEIGHT = 1 # 16 or 8
+    UPDATE_WEIGHT = 1
     EVAL_STEPS = 50
     NUM_ITER = 1
     GRAD_ACCUM = 1
     GRAD_NORM = 1
     REF_MODEL_MIXUP_ALPHA = 1 # 0.6
     MAX_INPUT_LEN = 1536
-    SAVE_PATH = "weights/NanoAgent-135M-grpo-web-hilr"
+    SAVE_PATH = "weights/NanoAgent-135M-grpo-web"
     DATA_PATH = "data/datasets/grpo_unordered_cache.pickle"
     MODEL = "quwsarohi/NanoAgent-135M"
-    QUANTIZATION = 8
+    QUANTIZATION = None
     GRADIENT_CHECKPOINT_LAYERS = 6
     TQDM = True
     SAMPLING = "token"
     SOFT_CLIP = True # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
-    TEMPERATURE = 0.6 # <= 0.9 when MIN_P not used
+    TEMPERATURE = 0.8 # <= 0.9 when MIN_P not used
     MIN_P = None
-    TOP_K = 10
-    TOP_P = None #0.95
+    TOP_K = None
+    TOP_P = 0.90
 
 
 # Token Sampling: DAPO - https://arxiv.org/pdf/2503.14476
@@ -89,11 +89,13 @@ class TrainConfig:
 
 assert TrainConfig.SAMPLING in ['token', 'sequence']
 assert 0 <= TrainConfig.UPDATE_WEIGHT
-assert 0 < TrainConfig.GRAD_NORM
+assert 0 < TrainConfig.GRAD_NORM or TrainConfig.GRAD_NORM is not None
 assert 1 <= TrainConfig.GRAD_ACCUM
 assert 1 <= TrainConfig.BATCH_SIZE
 assert 0 <= TrainConfig.WEIGHT_DECAY
 
+if TrainConfig.QUANTIZATION is not None:
+    print("WARNING: QUANTIZATION WOULD MAKE SOME/MOST PARAMETERS UNTRAINABLE")
 
 config_dict = {
     k: v
@@ -119,6 +121,7 @@ if TrainConfig.QUANTIZATION is not None:
     nn.quantize(model, group_size=64, bits=TrainConfig.QUANTIZATION)
     print(f"Model quantized to {TrainConfig.QUANTIZATION} bits")
 model.train()
+
 
 if TrainConfig.UPDATE_WEIGHT == 1:
     model_old = None
@@ -190,20 +193,37 @@ scheduler = linear_decay_with_warmup(
     decay_steps=TrainConfig.DECAY_STEPS
 )
 
+
+scheduler_muon = linear_decay_with_warmup(
+    base_lr=TrainConfig.LEARNING_RATE, #0.001, 0.01, 0.02, 1e-3,
+    total_steps=TrainConfig.ITERS // TrainConfig.BATCH_SIZE,
+    warmup_steps=TrainConfig.WARMUP_STEPS,
+    decay_steps=TrainConfig.DECAY_STEPS
+)
+
 optimizer = optim.AdamW(
     learning_rate=scheduler, betas=[0.9, 0.999], weight_decay=TrainConfig.WEIGHT_DECAY
 )
 
-# optimizer = optim.Muon(
-#     learning_rate=scheduler, weight_decay=TrainConfig.WEIGHT_DECAY
-# )
-
+# Interesting writings:
+# * https://www.lakernewhouse.com/writing/muon-2
+# * https://kellerjordan.github.io/posts/muon/
+# * https://varunneal.github.io/essays/muon
+# * https://github.com/KellerJordan/Muon
+# optimizer = [
+#     optim.AdamW(
+#         learning_rate=scheduler, betas=[0.9, 0.999], weight_decay=TrainConfig.WEIGHT_DECAY
+#     ),
+#     optim.Muon(
+#         learning_rate=scheduler_muon, weight_decay=TrainConfig.WEIGHT_DECAY
+#     )
+# ]
 
 def total_tokens(data):
     return len(
         tokenizer.encode(
             data,
-        )  # add_generation_prompt=True)
+        )
     )
 
 
@@ -412,10 +432,19 @@ def save_state(
 ):
     # Save optimizer the state
     # https://ml-explore.github.io/mlx/build/html/python/optimizers.html
-    mx.eval(model.state, optimizer.state)
-    mx.save_safetensors(
-        os.path.join(path, "optimizer.safetensors"), dict(tree_flatten(optimizer.state))
-    )
+    
+
+    if isinstance(optimizer, list):
+        mx.eval(model.state, optimizer[0].state, optimizer[1].state)
+        for iop, op in enumerate(optimizer):
+            mx.save_safetensors(
+                os.path.join(path, f"optimizer{iop}.safetensors"), dict(tree_flatten(op.state))
+            )
+    else:
+        mx.eval(model.state, optimizer.state)
+        mx.save_safetensors(
+            os.path.join(path, "optimizer.safetensors"), dict(tree_flatten(optimizer.state))
+        )
     save_model(save_path=path, model=dequantize_model(deepcopy(model)))
 
     train_info = {
@@ -462,7 +491,7 @@ def interpolate_models(past_model: nn.Module, present_model: nn.Module, weight: 
     return tree_unflatten(new_weights)
 
 
-def soft_gate(x, advantages, t_pos=1, t_neg=1.4):
+def soft_gate(x, advantages, t_pos=1, t_neg=1.1):
     # SAPO default: t_pos=1, t_neg=1.05
     temp = mx.where(advantages > 0, t_pos, t_neg)
     return mx.sigmoid(temp * (x-1)) * (4 / temp)
@@ -504,6 +533,7 @@ def calculate_log_probs(model, io_toks, ans_toks, pad_tok_id):
 def grpo_loss_fn(
     model, model_old, model_ref, io_toks, a_toks, advantages, beta, pad_tok_id
 ):
+    model.train()
     """The GRPO loss function."""
     # Get log probs from the trainable model (π_θ)
     log_probs, pad_mask = calculate_log_probs(model, io_toks, a_toks, pad_tok_id)
@@ -683,6 +713,7 @@ def grpo_train_loop(
             scorer = train_set[i]['scorer']
             group_rewards = []
             rollouts = []
+            model.eval()
 
             # Generate responses/rollouts
             for gitr in range(group_size * 2):
@@ -713,6 +744,7 @@ def grpo_train_loop(
             valid_rollout_indices = []
             unq_rolls = set()
             valid_rollout_rewards = []
+
             for ridx, (re, fs, rt) in enumerate(rollouts):
                 rt = tuple(rt.tolist())
                 # If rollout rewards are not diverse and we only have one to take, wait for diverse value
@@ -730,7 +762,7 @@ def grpo_train_loop(
                     break
 
             if len(valid_rollout_indices) <= 1 or (min(valid_rollout_rewards) == max(valid_rollout_rewards)):
-                # print(f"\nNo diversity in group rewards: {[round(x[0], 2) for x in rollouts]}. Skipping...")
+                print(f"\nNo diversity in group rewards: {[round(x[0], 2) for x in rollouts]}. Skipping...")
                 # for re, fs, rt in rollouts:
                     # print(f"{re:.2f}: {tokenizer.decode(rt.tolist())}")
                 continue
@@ -771,6 +803,7 @@ def grpo_train_loop(
         # Optimization Step
         _loss = 0
         for _ in range(TrainConfig.NUM_ITER):
+            model.train()
             loss, grads = loss_and_grad_fn(
                 model=model,
                 model_old=model_old,
@@ -781,16 +814,25 @@ def grpo_train_loop(
                 beta=beta,
                 pad_tok_id=tokenizer.pad_token_id,
             )
-            clipped_grads, total_norm = optim.clip_grad_norm(grads, max_norm=TrainConfig.GRAD_NORM)
+            if TrainConfig.GRAD_NORM is not None:
+                grads, total_norm = optim.clip_grad_norm(grads, max_norm=TrainConfig.GRAD_NORM)
+                del total_norm
+
             if TrainConfig.GRAD_ACCUM == 1:
-                optimizer.update(model, clipped_grads)
-                mx.eval(model.parameters(), optimizer.state)
+                if not isinstance(optimizer, list):
+                    optimizer.update(model, grads)
+                    mx.eval(model, optimizer.state)
+                else:
+                    weights, biases = split_grads(grads)                    
+                    optimizer[0].update(model, biases)
+                    optimizer[1].update(model, weights)
+                    mx.eval(model, optimizer[0].state, optimizer[1].state)
             # elif len(losses) % TrainConfig.GRAD_ACCUM == 0:
             else:
                 if accum_grads is not None:
-                    accum_grads = tree_map(mx.add, clipped_grads, accum_grads)
+                    accum_grads = tree_map(mx.add, grads, accum_grads)
                 else:
-                    accum_grads = clipped_grads
+                    accum_grads = grads
                 mx.eval(accum_grads)
 
                 if len(losses) % TrainConfig.GRAD_ACCUM == 0:
@@ -804,15 +846,18 @@ def grpo_train_loop(
             skipped = False
 
         losses.append(_loss)
-        learning_rates.append(optimizer.learning_rate.item())
+        if isinstance(optimizer, list):
+            learning_rates.append((optimizer[0].learning_rate.item(), optimizer[1].learning_rate.item()))
+        else:
+            learning_rates.append((optimizer.learning_rate.item(), ))
         tot_loss += _loss
 
         if TrainConfig.TQDM:
             rwds = list(map(lambda x: round(x, 2), all_rewards[-3:]))
             pbar.set_description(
-                f"Loss: {tot_loss / (len(losses) + 1):.4f} | LR: {optimizer.learning_rate.item():1.6f} | MA Score: {sum(all_rewards)/len(all_rewards):.2f} | Max {sum(max_rewards) / len(max_rewards):.2f} | Eval: {eval_rewards[-1][0]['eval_score']:.2f} | Rewards: {rwds}"
+                f"Loss: {tot_loss / (len(losses) + 1):.4f} | LR: {learning_rates[-1][-1]:1.6f} | MA Score: {sum(all_rewards)/len(all_rewards):.2f} | Max {sum(max_rewards) / len(max_rewards):.2f} | Eval: {eval_rewards[-1][0]['eval_score']:.2f} | Rewards: {rwds}"
             )
-        del grads, clipped_grads, total_norm, loss
+        del grads, loss
 
         # Sync old model weights
         if TrainConfig.UPDATE_WEIGHT >= 1 and len(losses) % TrainConfig.UPDATE_WEIGHT == 0 and model_old is not None:
@@ -866,6 +911,38 @@ def grpo_train_loop(
     print("Saved final weights to adapters/adapters.safetensors.")
     return losses, all_rewards, max_rewards
 
+
+model.unfreeze()
+mx.eval(model)
+
+# Freeze model weights
+# params = tree_flatten(model.parameters())
+# freeze_keys = []
+# for key, value in params:
+#     special_layers = ['embed', 'lm_head', 'softmax', 'output', 'classifier']
+#     if any(k in key for k in special_layers) or (value.ndim < 1):
+#         print(key)
+#         freeze_keys.append(key)
+# model.freeze(recurse=True, keys=freeze_keys)
+
+# special_layers = ['embed', 'lm_head', 'softmax', 'output', 'classifier']
+# model.apply_to_modules(lambda k, v: v.freeze() if any(n in k for n in special_layers) else None)
+
+# all_params = tree_flatten(model.parameters())
+# trainable_keys = set(k for k, _ in tree_flatten(model.trainable_parameters()))
+
+# 2. Iterate and print status
+# print(f"{'Parameter Name':<40} | {'Status':<10}")
+# print("-" * 55)
+# for name, value in all_params:
+#     status = "Trainable" if name in trainable_keys else "FROZEN"
+#     print(f"{name:<40} | {status:<10}")
+
+total_params = sum(v.size for name, v in tree_flatten(model.parameters()))
+trainable_params = sum(v.size for name, v in tree_flatten(model.trainable_parameters()))
+
+print(f"Total Parameters: {total_params:,}")
+print(f"Trainable Parameters: {trainable_params:,} ({(trainable_params/total_params)*100:.3f}%)")
 
 losses, all_rewards, max_rewards = grpo_train_loop(
     model=model,

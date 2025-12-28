@@ -92,10 +92,18 @@ def split_grads(grads):
     special_layers = ['embed', 'lm_head', 'softmax', 'output', 'classifier']
     weights, biases = [], []
     for k, v in grads:
-        if v.ndim == 2 and all([name not in k for name in special_layers]):
+        if all([name not in k for name in special_layers]) and v.ndim >= 2:
             weights.append((k, v))
         else:
             biases.append((k, v))
     weights = tree_unflatten(weights)
     biases = tree_unflatten(biases)
     return weights, biases
+
+# def split_grads(grads):
+#     grads = tree_flatten(grads)
+#     weights = [(k, v) for k, v in grads if v.ndim == 2]
+#     biases = [(k, v) for k, v in grads if v.ndim == 1]
+#     weights = tree_unflatten(weights)
+#     biases = tree_unflatten(biases)
+#     return weights, biases
