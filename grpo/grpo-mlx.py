@@ -6,7 +6,7 @@
 
 import json
 import os
-os.environ['HF_HUB_OFFLINE'] = '1'
+# os.environ['HF_HUB_OFFLINE'] = '1'
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -32,8 +32,8 @@ from mlx_lm import generate, load, convert
 from mlx_lm.utils import load_model, save_model, dequantize_model
 from data.grpo.salseforce_tool import salesfores_toolcall
 from data.grpo.websearch_tool import tool_calling_traces
+from data.grpo.easy_math import easymath
 from data.grpo.autoif import autoif_ds
-from data.grpo.calculate import calculate_math
 from data.grpo.gorilla_tool import gorilla_openfun
 from scipy.ndimage import gaussian_filter1d
 from utils.utils import sampler, grad_checkpoint, split_grads
@@ -50,42 +50,70 @@ from utils.webtool import tool_call_extract
 @dataclass
 class TrainConfig:
     # Iterations
-    ITERS = 3_000
-    GENERATE_DATA = False
+    ITERS = 500 #3_000
+    GENERATE_DATA = True
     BATCH_SIZE = 1
     GEN_LEN = 512 #64
     SAVE_FREQ = 50
     LOAD_PREV = False
-    LEARNING_RATE = 1e-5
+    LEARNING_RATE = 1e-6
     WEIGHT_DECAY = 0.01
-    EPSILON_MIN = 0.2  # Sequence/GSPO: 3e-4 | GRPO: 0.2
-    EPSILON_HIGH = 0.272 # Sequence/GSPO: 4e-4 | GRPO: 0.272
+    EPSILON_MIN = 0.2    # Sequence/GSPO: 3e-4 | GRPO: 0.2 |   Note: Should not be changed
+    EPSILON_HIGH = 0.272 # Sequence/GSPO: 4e-4 | GRPO: 0.272 | Note: Can be changed 
     GROUP_SIZE = 3 # 4
     WARMUP_STEPS = 10 # 50
     DECAY_STEPS = 20 # 10
     BETA = 0 # 0.04
-    UPDATE_WEIGHT = 1
+    UPDATE_WEIGHT = 1 # 4 - Could give smoother & stable learning while compromising memory
     EVAL_STEPS = 50
     NUM_ITER = 1
     GRAD_ACCUM = 1
     GRAD_NORM = 1
     REF_MODEL_MIXUP_ALPHA = 1 # 0.6
     MAX_INPUT_LEN = 768 # 1536
-    SAVE_PATH = "weights/NanoAgent-135M-grpo"
+    SAVE_PATH = "weights/NanoAgent-135M-drgrpo-up1"
     DATA_PATH = "data/datasets/grpo_mix.pickle"
-    MODEL = "quwsarohi/NanoAgent-135M" #"weights/SmolLM2-360M-mlx-instruct"
+    MODEL = "quwsarohi/NanoAgent-135M" # "HuggingFaceTB/SmolLM2-135M-Instruct" "weights/SmolLM2-360M-mlx-instruct"
     QUANTIZATION = None
     GRADIENT_CHECKPOINT_LAYERS = 6
+    EVAL_SAMPLES = 100
     TQDM = True
     STD_NORM = False
     CONST_TOK_SCALE = True
     SAMPLING = "token"
-    SOFT_CLIP = True # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
+    SOFT_CLIP = False # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
     TEMPERATURE = 1
-    MIN_P = 0.15 # None
+    MIN_P = 0.2 # Expected ~0.2 for Smollm2-135M
     TOP_K = None
-    TOP_P = None # 0.85
+    TOP_P = None # Important: Only ~ 0.95 gave increasing reward for Smollm2-135M
 
+# GSPO Constraints:
+# -----------------
+# STD_NORM = True
+# CONST_TOK_SCALE = False
+# SOFT_CLIP = False
+# EPSILON_MIN = 3e-2  # Sequence/GSPO: 3e-4
+# EPSILON_HIGH = 4e-2 # Sequence/GSPO: 4e-4
+# SAMPLING = "sequence"
+
+# DR GRPO Constraints:
+# --------------------
+# STD_NORM = False
+# CONST_TOK_SCALE = True
+# SOFT_CLIP = False
+# EPSILON_MIN = 0.2
+# EPSILON_HIGH = 0.272
+# SAMPLING = "token"
+
+# SAPO Constraints:
+# -----------------
+# STD_NORM = False
+# CONST_TOK_SCALE = True
+# SOFT_CLIP = True
+# EPSILON_MIN = 0.2 [unused]
+# EPSILON_HIGH = 0.272 [unused]
+# SAMPLING = "token"
+# t_pos=1, t_neg=1.1
 
 # Token Sampling: DAPO - https://arxiv.org/pdf/2503.14476
 # Sequence Sampling: GSPO - https://arxiv.org/pdf/2507.18071
@@ -235,8 +263,11 @@ def tool_tokens(ground_tool_call):
 
 
 if TrainConfig.GENERATE_DATA:
-    train_ds = autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN) + salesfores_toolcall(tokenizer, TrainConfig.MAX_INPUT_LEN) + tool_calling_traces(tokenizer, TrainConfig.MAX_INPUT_LEN)
+    # train_ds = autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN) + salesfores_toolcall(tokenizer, TrainConfig.MAX_INPUT_LEN) + tool_calling_traces(tokenizer, TrainConfig.MAX_INPUT_LEN)
     # train_ds = list(filter(lambda x: total_tokens(x['prompt']) <= TrainConfig.MAX_INPUT_LEN, train_ds))
+    train_ds = autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN)
+    train_ds = sorted(train_ds, key=lambda x: len(x['prompt']), reverse=True)[:2000]
+    train_ds += easymath(tokenizer)
     random.shuffle(train_ds)
     print("New Generated Dataset length:", len(train_ds))
     with open(TrainConfig.DATA_PATH, 'wb') as fp:
@@ -248,15 +279,21 @@ else:
     print(
         f"Dataset loaded from path: {TrainConfig.DATA_PATH} | Dataset length: {len(train_ds)}"
     )
+if TrainConfig.EVAL_SAMPLES:
+    eval_ds = train_ds[-TrainConfig.EVAL_SAMPLES:]
+    train_ds = train_ds[:-TrainConfig.EVAL_SAMPLES]
+else:
+    eval_ds = None
 
 
 
-def evaluate(eval_model, samples, runs=4, temp=0.):
-    # return [0]
-    eval_data = train_ds[-samples:]
+def evaluate(eval_model, runs=4, temp=0.):
+    return [0]
+    if not eval_ds:
+        return [0]
     rewards = []
     eval_model.eval()
-    for idx, data in enumerate(eval_data):
+    for idx, data in enumerate(eval_ds):
         # Removing tool_call lead
         prompt_tokens = tokenizer.encode(data['prompt'].rstrip('<tool_call>'))
         scorer = data['scorer']
@@ -275,7 +312,7 @@ def evaluate(eval_model, samples, runs=4, temp=0.):
 
 def mean_map(data, win=20):
     def _mean(x):
-        while len(x) < win: x.append(0)
+        # while len(x) < win: x.append(min(x))
         return sum(x) / len(x)
     _data = []
     for i in range(len(data)):
@@ -299,11 +336,12 @@ def prog_graph(
     fig.suptitle(f"GRPO Iter: {iter}", fontsize=13)
 
     # GRPO Loss
-    axes[0].plot(np.cumsum(all_losses) / (np.arange(len(all_losses)) + 1), color="tab:red", alpha=0.6, linestyle='--')
-    # axes[0].plot(mean_map(all_losses), color="tab:red", alpha=0.6, linestyle='--')
-    axes[0].plot(gaussian_filter1d(all_losses, sigma=2), color="tab:red", linewidth=2)
+    axes[0].plot(np.cumsum(all_losses) / (np.arange(len(all_losses)) + 1), color="tab:red", alpha=0.6, linestyle=':', label='Cumulative Sum')
+    # axes[0].plot(mean_map(all_losses), color="tab:red", alpha=0.6, linestyle='--', label='Mean Win. 20')
+    axes[0].plot(gaussian_filter1d(all_losses, sigma=2), color="tab:red", linewidth=2, label='Smoothen')
     # axes[0].plot(all_losses, color="tab:red", alpha=0.2)
     axes[0].set_title("Training Loss")
+    axes[0].legend()
     axes[0].grid(True)
 
     # Rewards
@@ -328,11 +366,12 @@ def prog_graph(
             zorder=0      # keep it behind the lines
         )
 
-    axes[1].plot(np.cumsum(all_rewards) / (np.arange(len(all_rewards)) + 1), color="tab:blue", alpha=0.4, linestyle=':')
-    axes[1].plot(mean_map(all_rewards), color="tab:blue", alpha=0.6, linestyle='--')
-    axes[1].plot(gaussian_filter1d(all_rewards, sigma=2.5), linewidth=2, color="tab:blue")
+    axes[1].plot(np.cumsum(all_rewards) / (np.arange(len(all_rewards)) + 1), color="tab:blue", alpha=0.6, linestyle=':', label='Cumulative Sum')
+    axes[1].plot(mean_map(all_rewards), color="tab:blue", alpha=0.8, linestyle='--', label='Mean Win. 20')
+    axes[1].plot(gaussian_filter1d(all_rewards, sigma=2.5), linewidth=2, color="tab:blue", label='Smoothen')
     # axes[1].plot(all_rewards, alpha=0.2, color="tab:blue")
-    axes[1].set_title("All Reward (blue)")
+    axes[1].set_title("Rewards")
+    axes[1].legend()
     axes[1].grid(True)
 
     itrs = [x[0]['iter'] for x in eval_rewards]
@@ -501,7 +540,7 @@ def interpolate_models(past_model: nn.Module, present_model: nn.Module, weight: 
     return tree_unflatten(new_weights)
 
 
-def soft_gate(x, advantages, t_pos=1, t_neg=1.05):
+def soft_gate(x, advantages, t_pos=1, t_neg=1.1):
     # SAPO default: t_pos=1, t_neg=1.05
     temp = mx.where(advantages > 0, t_pos, t_neg)
     return mx.sigmoid(temp * (x-1)) * (4 / temp)
@@ -566,7 +605,7 @@ def grpo_loss_fn(
     if TrainConfig.CONST_TOK_SCALE:
         total_tokens = n_groups * TrainConfig.GEN_LEN
     else:
-        total_tokens = pad_mask.sum()    
+        total_tokens = pad_mask.sum()
 
     # PPO-clip objective
     # Ratio is converted from log values using exp(log)
@@ -621,7 +660,10 @@ def grpo_loss_fn(
 
     # The objective is to maximize this, so we return the negative for minimization
     if TrainConfig.SAMPLING == 'token':
-        loss = -1 * ((token_policy_reward.sum(axis=-1) / total_tokens).sum(axis=-1)).sum()
+        # DAPO
+        # loss = -1 * ((token_policy_reward.sum() / total_tokens).sum()
+        # DR GRPO
+        loss = -1 * ((token_policy_reward.sum(axis=-1) / total_tokens)).sum()
     else:
         loss = -1 * (token_policy_reward.sum() / n_groups)
     return loss
@@ -693,9 +735,9 @@ def grpo_train_loop(
     while len(losses) < TrainConfig.ITERS:
         # Evaluation
         if len(losses) % TrainConfig.EVAL_STEPS == 0 and not skipped:
-            # eval_sampling = evaluate(model, runs=1, temp=0.1)
-            eval_greedy = evaluate(model, samples=100, runs=1, temp=0)
-            eval_sampling = eval_greedy
+            eval_sampling = evaluate(model, runs=3, temp=0.4)
+            eval_greedy = evaluate(model, runs=1, temp=0)
+            # eval_sampling = eval_greedy
             eval_rewards.append([
                 {
                     'iter': len(losses),
@@ -750,7 +792,7 @@ def grpo_train_loop(
                 if response in response_score_cache:
                     reward = response_score_cache[response]
                 else:
-                    reward = scorer(response)
+                    reward = float(scorer(response))
                     response_score_cache[response] = reward
                 
                 full_sequence = mx.array(prompt_tokens + response_tokens)
@@ -794,7 +836,7 @@ def grpo_train_loop(
             rollouts = [rollouts[p] for p in valid_rollout_indices]
             
             print("\nRollouts:", [round(x[0], 2) for x in rollouts])
-            # print(train_set[i%len(train_set)]['prompt'])
+            print(train_set[i%len(train_set)]['prompt'])
             for re, fs, rt in rollouts:
                 print(f"{re:.2f}: {tokenizer.decode(rt.tolist())}")
             print()

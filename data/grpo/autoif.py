@@ -48,14 +48,15 @@ def scorer(response, eval_func, question):
         except Exception as E:
             print("Exception:", E)
             result = False
-        if result:
-            prompt = f"# User Question:\n{question}\n\n# Language Model Reply:\n{response}"
-            try:
-                res =  answer_validate(prompt)
-                result = res and result
-            except Exception as E:
-                print("Exception:", E)
-                result = False
+        # Not using LLM Eval for speed
+        # if result:
+        #     prompt = f"# User Question:\n{question}\n\n# Language Model Reply:\n{response}"
+        #     try:
+        #         res =  answer_validate(prompt)
+        #         result = res and result
+        #     except Exception as E:
+        #         print("Exception:", E)
+        #         result = False
         results.append(result)
     return all(results)
 
