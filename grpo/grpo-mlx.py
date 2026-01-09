@@ -31,12 +31,13 @@ import random
 from mlx.utils import tree_flatten, tree_unflatten, tree_map
 from mlx_lm import batch_generate, generate, load, convert
 from mlx_lm.utils import load_model, save_model, dequantize_model
-from data.grpo.salseforce_tool import salesfores_toolcall
+# from data.grpo.salseforce_tool import salesfores_toolcall
 from data.grpo.websearch_tool import tool_calling_traces
 from data.grpo.mobile_actions import mobileactions
-from data.grpo.easy_math import easymath
+# from data.grpo.easy_math import easymath
 from data.grpo.autoif import autoif_ds
-from data.grpo.gorilla_tool import gorilla_openfun
+# from data.grpo.gorilla_tool import gorilla_openfun
+from data.grpo.reasoning_gym import *
 from scipy.ndimage import gaussian_filter1d
 from utils.utils import sampler, grad_checkpoint, split_grads
 
@@ -73,17 +74,17 @@ class TrainConfig:
     GRAD_NORM = 1
     REF_MODEL_MIXUP_ALPHA = 1 # 0.6
     MAX_INPUT_LEN = 768 # 1536
-    SAVE_PATH = "weights/NanoAgent-135M-gspo"
+    SAVE_PATH = "weights/NanoAgent-135M-grpo-web"
     DATA_PATH = "data/datasets/grpo_mix.pickle"
     MODEL = "quwsarohi/NanoAgent-135M" # "HuggingFaceTB/SmolLM2-135M-Instruct" "weights/SmolLM2-360M-mlx-instruct"
     QUANTIZATION = None
     GRADIENT_CHECKPOINT_LAYERS = 6
     EVAL_SAMPLES = 100
     TQDM = True
-    STD_NORM = True
-    CONST_TOK_SCALE = False
-    SAMPLING = "sequence"
-    SOFT_CLIP = False # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
+    STD_NORM = False
+    CONST_TOK_SCALE = True
+    SAMPLING = "token"
+    SOFT_CLIP = True # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
     TEMPERATURE = 0.7 # Better to keep <= 0.9
     MIN_P = None # Expected ~0.2 for Smollm2-135M
     TOP_K = None
@@ -268,11 +269,29 @@ def tool_tokens(ground_tool_call):
 
 
 if TrainConfig.GENERATE_DATA:
+    ds_size = 4 * TrainConfig.ITERS
+    sz = int(ds_size * 0.3)
     train_ds = autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN)
-    train_ds = sorted(train_ds, key=lambda x: len(x['prompt']), reverse=True)[:3000]
-    train_ds += easymath(tokenizer)[:3000]
-    train_ds += tool_calling_traces(tokenizer, TrainConfig.MAX_INPUT_LEN)[:700]
-    train_ds += mobileactions(tokenizer, TrainConfig.MAX_INPUT_LEN)[:1000]
+    train_ds = sorted(train_ds, key=lambda x: len(x['prompt']), reverse=True)[:sz]
+    # train_ds += easymath(tokenizer)[:3000]
+    sz = int(ds_size * 0.05)
+    train_ds += tool_calling_traces(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
+    sz = int(ds_size * 0.05)
+    train_ds += mobileactions(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
+    sz = int(ds_size * 0.05)
+    train_ds += needle_haystack(tokenizer, size=TrainConfig.MAX_INPUT_LEN, prompt_token_len=TrainConfig.MAX_INPUT_LEN)[:sz]
+    sz = int(ds_size * 0.1)
+    train_ds += alice_in_wonderland(tokenizer=tokenizer, size=sz)
+    sz = int(ds_size * 0.1)
+    train_ds += syllogism(tokenizer, size=sz)
+    sz = int(ds_size * 0.05)
+    train_ds += family_relationships(tokenizer, size=sz)
+    sz = int(ds_size * 0.05)
+    train_ds += gsm_symbolic(tokenizer, size=sz)
+    sz = int(ds_size * 0.1)
+    train_ds += list_functions(tokenizer, size=sz)
+    sz = int(ds_size * 0.1)
+    train_ds += codeio(tokenizer, size=sz)
     random.shuffle(train_ds)
     print("New Generated Dataset length:", len(train_ds))
     with open(TrainConfig.DATA_PATH, 'wb') as fp:
@@ -292,7 +311,7 @@ else:
 
 
 def evaluate(eval_model, runs=4, temp=0.):
-    return [0]
+    # return [0]
     if not eval_ds:
         return [0]
     rewards = []
@@ -817,7 +836,7 @@ def grpo_train_loop(
                 if len(valid_rollout_indices) == TrainConfig.GROUP_SIZE:
                     break
 
-            if len(valid_rollout_indices) != group_size or (min(valid_rollout_rewards) == max(valid_rollout_rewards)):
+            if len(valid_rollout_indices) < 2 or (min(valid_rollout_rewards) == max(valid_rollout_rewards)):
                 print(f"\nNo diversity in group rewards: {[round(x[0], 2) for x in rollouts]}. Skipping...")
                 # print(train_set[i%len(train_set)]['prompt'])
                 # for re, fs, rt in rollouts:
@@ -825,11 +844,12 @@ def grpo_train_loop(
                 continue
 
             rollouts = [rollouts[p] for p in valid_rollout_indices]
-            # print("\nRollouts:", [round(x[0], 2) for x in rollouts])
-            # print(train_set[i%len(train_set)]['prompt'])
-            # for re, fs, rt in rollouts:
-                # print(f"{re:.2f}: --> {tokenizer.decode(rt.tolist())}")
-            # print()
+            print("\nRollouts:", [round(x[0], 2) for x in rollouts])
+            print(train_set[i%len(train_set)]['prompt'])
+            for re, fs, rt in rollouts:
+                print(f"{re:.2f}: --> {tokenizer.decode(rt.tolist())}")
+                print("---")
+            print()
 
             # Store data for the optimization step
             group_rewards.extend([x[0] for x in rollouts])

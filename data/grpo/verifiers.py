@@ -13,7 +13,7 @@ import ollama
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-OLLAMA_MODEL = "qwen3:1.7b"
+# OLLAMA_MODEL = "qwen3:1.7b"
 OLLAMA_MODEL = "qwen3:0.6b"
 # OLLAMA_MODEL = "gemma3:270m"
 
@@ -109,7 +109,7 @@ def tool_scorer(llm_gen, tools_ground, def_tools, verbose=False):
     try:
         return _tool_scorer(llm_gen, tools_ground, def_tools, verbose)
     except Exception as E:
-        print("Exception:", E, '| Input:', llm_gen)
+        print("Exception:", E, '| Input:', llm_gen, '| Ground:', tools_ground)
         return 0, None
 
 
@@ -148,22 +148,22 @@ def _tool_scorer(llm_gen, tools_ground, def_tools, threshold, verbose=False):
         if 'name' not in tool or 'arguments' not in tool:
             return 0, None
         # Not a dict
-        if not isinstance(tool['arguments'], dict):
+        if not isinstance(tool.get('arguments', {}), dict):
             return 0, None
         # Invalid tool call
-        if tool['name'] not in tool_ground_names:
+        if tool.get('name', None) not in tool_ground_names:
             return 0, None
         # Invalid arguments
-        for param_name, gen_val in tool['arguments'].items():
-            if param_name not in tools_ground_args[tool['name']]:
+        tool_name = tool['name']
+        for param_name, gen_val in tool.get('arguments', {}).items():
+            if param_name not in tools_ground_args.get(tool_name, {}):
                 return 0, None
-            ground_val = tools_ground_args[tool['name']][param_name]
-
+            ground_val = tools_ground_args.get(tool_name, {}).get(param_name)
             sim_score = cosine_similarity_tfidf(str(gen_val), str(ground_val))
             args_score.append(sim_score if type(gen_val) is type(ground_val) else 0)
             
         # TODO: Missing required attribs
-        for param_name in req_ground_attribs[tool['name']]:
+        for param_name in req_ground_attribs.get(tool_name, []):
             if param_name not in tool['arguments']:
                 # print(param_name, 'missing in', llm_gen)
                 total_score += -0.05
