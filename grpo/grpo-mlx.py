@@ -53,13 +53,13 @@ from utils.webtool import tool_call_extract
 @dataclass
 class TrainConfig:
     # Iterations
-    ITERS = 5000 #3_000
+    ITERS = 2000 #3_000
     GENERATE_DATA = False
     BATCH_SIZE = 1
-    GEN_LEN = 384 #64
+    GEN_LEN = 256 #64
     SAVE_FREQ = 50
     LOAD_PREV = False
-    LEARNING_RATE = 1e-5
+    LEARNING_RATE = 1e-6
     WEIGHT_DECAY = 0
     EPSILON_MIN = 3e-2    # Sequence/GSPO: 3e-4 | GRPO: 0.2 |   Note: Should not be changed
     EPSILON_HIGH = 4e-2   # Sequence/GSPO: 4e-4 | GRPO: 0.272 | Note: Can be changed 
@@ -74,7 +74,7 @@ class TrainConfig:
     GRAD_NORM = 1
     REF_MODEL_MIXUP_ALPHA = 0 # 0.6
     MAX_INPUT_LEN = 512 # 768
-    SAVE_PATH = "weights/NanoAgent-135M-grpo-web"
+    SAVE_PATH = "weights/NanoAgent-135M-grpo-hilr"
     DATA_PATH = "data/datasets/grpo_mix.pickle"
     MODEL = "quwsarohi/NanoAgent-135M" # "HuggingFaceTB/SmolLM2-135M-Instruct" "weights/SmolLM2-360M-mlx-instruct"
     QUANTIZATION = None

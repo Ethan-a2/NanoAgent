@@ -28,7 +28,7 @@ Your task is to provide a 'total rating' scoring how well the system_answer answ
 Give your answer on a scale of 1 to 4, where 1 means that the system_answer is not helpful at all, and 4 means that the system_answer completely and helpfully addresses the user_question.
 
 Here is the scale you should use to build your answer:
-1: The system_answer is terrible: completely irrelevant to the question asked, or very partial, or strongly incorrect
+1: The system_answer is terrible: completely irrelevant to the question asked, or very partial, or strongly incorrect, or repeats every information present in the question
 2: The system_answer is mostly not helpful: misses some key instructions of the question, repeats steps needlessly, answer is mostly incorrect, but contains missinformation & hallucination
 3: The system_answer is mostly helpful: provides support follows most instructions, but still could be improved, answer can be somewhat incorrect, with lesser missinformation & hallucination
 4: The system_answer is excellent: relevant, direct, detailed, and addresses all the instructions in the question

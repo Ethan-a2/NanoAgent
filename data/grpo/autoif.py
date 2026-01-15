@@ -18,9 +18,9 @@ def scorer(response, eval_func, question):
         results.append(result)
 
     final_result = sum([float(r) for r in results]) / len(results)
-    if final_result > 0:
-        judge_score = response_judge(question=question, response=response, n_tokens=128)[1]
-        final_result = final_result * 0.5 + judge_score * 0.5
+    # if final_result > 0:
+    judge_score = response_judge(question=question, response=response, n_tokens=128+64)[1]
+    final_result = final_result * 0.5 + judge_score * 0.5
 
     return final_result
 
