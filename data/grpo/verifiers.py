@@ -13,7 +13,8 @@ import ollama
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-OLLAMA_MODEL = "qwen3:1.7b"
+OLLAMA_MODEL = "qwen3:4b"
+# OLLAMA_MODEL = "qwen3:1.7b"
 # OLLAMA_MODEL = "qwen3:0.6b"
 # OLLAMA_MODEL = "gemma3:270m"
 
@@ -29,15 +30,17 @@ Give your answer on a scale of 1 to 4, where 1 means that the system_answer is n
 
 Here is the scale you should use to build your answer:
 1: The system_answer is terrible: completely irrelevant to the question asked, or very partial, or strongly incorrect, or repeats every information present in the question
-2: The system_answer is mostly not helpful: misses some key instructions of the question, repeats steps needlessly, answer is mostly incorrect, but contains missinformation & hallucination
-3: The system_answer is mostly helpful: provides support follows most instructions, but still could be improved, answer can be somewhat incorrect, with lesser missinformation & hallucination
+2: The system_answer is mostly not helpful: misses some key instructions of the question, repeats steps needlessly, answer is mostly incorrect and contains missinformation
+3: The system_answer is mostly helpful: provides support follows most instructions, but still could be improved, answer can be somewhat incorrect, with lesser missinformation
 4: The system_answer is excellent: relevant, direct, detailed, and addresses all the instructions in the question
+
+You can award 1 bonus point (making total score to 5) if the reply has step-by-step correct explanation of how the final answer is derived.
 
 Provide your feedback as follows:
 
 Feedback:::
 Evaluation: (your extremely concise rationale for the rating, as a text)
-Total rating: (your rating, as a number between 1 and 4)
+Total rating: (your rating, as a number between 1 and 5)
 
 You MUST provide values for 'Evaluation:' and 'Total rating:' in your answer.
 
@@ -65,8 +68,9 @@ Feedback:::
 
     last_line = list(filter(lambda x: len(x.strip()) > 0, response.split('\n')))[-1].strip()
     digits = re.findall(r'\d+', last_line)
-    if digits:
-        score = int(digits[-1]) / 4
+    digits = list(map(int, digits))
+    if digits and 0 < digits[-1] <= 5:
+        score = digits[-1] / 5
     else:
         score = 0
 
@@ -76,7 +80,7 @@ Feedback:::
     # print(response)
     # print('Extracted Score:', score)
 
-    return response, score
+    return response, min(max(score, 1), 0)
 
 
 def get_llm_response(messages, think=False, n_tokens=2):

@@ -53,28 +53,28 @@ from utils.webtool import tool_call_extract
 @dataclass
 class TrainConfig:
     # Iterations
-    ITERS = 2000 #3_000
+    ITERS = 1000 #3_000
     GENERATE_DATA = False
     BATCH_SIZE = 1
-    GEN_LEN = 256 #64
+    GEN_LEN = 384
     SAVE_FREQ = 50
     LOAD_PREV = False
-    LEARNING_RATE = 1e-6
+    LEARNING_RATE = 1e-5
     WEIGHT_DECAY = 0
     EPSILON_MIN = 3e-2    # Sequence/GSPO: 3e-4 | GRPO: 0.2 |   Note: Should not be changed
     EPSILON_HIGH = 4e-2   # Sequence/GSPO: 4e-4 | GRPO: 0.272 | Note: Can be changed 
     GROUP_SIZE = 4
-    WARMUP_STEPS = 10 # 50
-    DECAY_STEPS = 20 # 10
+    WARMUP_STEPS = 50 # 50
+    DECAY_STEPS = 40 # 10
     BETA = 0.04 # 0.04
     UPDATE_WEIGHT = 1 # 4 - Could give smoother & stable learning while compromising memory
     EVAL_STEPS = 100
-    NUM_ITER = 1
+    NUM_MODEL_UPDATE_MU = 1
     GRAD_ACCUM = 1
     GRAD_NORM = 1
     REF_MODEL_MIXUP_ALPHA = 0 # 0.6
     MAX_INPUT_LEN = 512 # 768
-    SAVE_PATH = "weights/NanoAgent-135M-grpo-hilr"
+    SAVE_PATH = "weights/NanoAgent-135M-grpo"
     DATA_PATH = "data/datasets/grpo_mix.pickle"
     MODEL = "quwsarohi/NanoAgent-135M" # "HuggingFaceTB/SmolLM2-135M-Instruct" "weights/SmolLM2-360M-mlx-instruct"
     QUANTIZATION = None
@@ -84,11 +84,12 @@ class TrainConfig:
     STD_NORM = False
     CONST_TOK_SCALE = True
     SAMPLING = "token"
-    SOFT_CLIP = True # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
-    TEMPERATURE = 0.7 # Better to keep <= 0.9
+    SOFT_CLIP = False # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
+    # TEMPERATURE = [0.9, 0.8, 0.7, .65, 0.6, 0.5] #0.7 # Better to keep <= 0.9
+    TEMPERATURE = 1 #0.7
     MIN_P = None # Expected ~0.2 for Smollm2-135M
     TOP_K = None
-    TOP_P = 0.95 # Important: Only ~ 0.95 gave increasing reward for Smollm2-135M
+    TOP_P = None # Important: Only ~ 0.95 gave increasing reward for Smollm2-135M
 
 # GSPO Constraints:
 # -----------------
@@ -224,18 +225,18 @@ def linear_decay_with_warmup(
 
 scheduler = linear_decay_with_warmup(
     base_lr=TrainConfig.LEARNING_RATE,
-    total_steps=TrainConfig.ITERS // TrainConfig.BATCH_SIZE,
-    warmup_steps=TrainConfig.WARMUP_STEPS,
-    decay_steps=TrainConfig.DECAY_STEPS
+    total_steps=(TrainConfig.ITERS * TrainConfig.NUM_MODEL_UPDATE_MU) // TrainConfig.BATCH_SIZE,
+    warmup_steps=TrainConfig.WARMUP_STEPS * TrainConfig.NUM_MODEL_UPDATE_MU,
+    decay_steps=TrainConfig.DECAY_STEPS * TrainConfig.NUM_MODEL_UPDATE_MU
 )
 
 
-scheduler_muon = linear_decay_with_warmup(
-    base_lr=TrainConfig.LEARNING_RATE, #0.001, 0.01, 0.02, 1e-3,
-    total_steps=TrainConfig.ITERS // TrainConfig.BATCH_SIZE,
-    warmup_steps=TrainConfig.WARMUP_STEPS,
-    decay_steps=TrainConfig.DECAY_STEPS
-)
+# scheduler_muon = linear_decay_with_warmup(
+#     base_lr=TrainConfig.LEARNING_RATE, #0.001, 0.01, 0.02, 1e-3,
+#     total_steps=TrainConfig.ITERS // TrainConfig.BATCH_SIZE,
+#     warmup_steps=TrainConfig.WARMUP_STEPS,
+#     decay_steps=TrainConfig.DECAY_STEPS
+# )
 
 optimizer = optim.AdamW(
     learning_rate=scheduler, betas=[0.9, 0.999], weight_decay=TrainConfig.WEIGHT_DECAY
@@ -273,21 +274,19 @@ if TrainConfig.GENERATE_DATA:
     sz = int(ds_size * 0.35)
     train_ds = autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN)
     train_ds = sorted(train_ds, key=lambda x: len(x['prompt']), reverse=True)[:sz]
-    sz = int(ds_size * 0.025)
+    sz = int(ds_size * 0.5)
     train_ds += tool_calling_traces(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
-    sz = int(ds_size * 0.025)
-    train_ds += mobileactions(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
-    sz = int(ds_size * 0.05)
+    # sz = int(ds_size * 0.025)
+    # train_ds += mobileactions(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
+    sz = int(ds_size * 0.1)
     train_ds += needle_haystack(tokenizer, size=sz*3, prompt_token_len=TrainConfig.MAX_INPUT_LEN)[:sz]
     sz = int(ds_size * 0.15)
     train_ds += alice_in_wonderland(tokenizer=tokenizer, size=sz)
-    sz = int(ds_size * 0.15)
-    train_ds += syllogism(tokenizer, size=sz)
-    # sz = int(ds_size * 0.05)
-    # train_ds += family_relationships(tokenizer, size=sz)
+    # sz = int(ds_size * 0.15)
+    # train_ds += syllogism(tokenizer, size=sz)
     sz = int(ds_size * 0.1)
     train_ds += gsm_symbolic(tokenizer, size=sz)
-    sz = int(ds_size * 0.05)
+    sz = int(ds_size * 0.1)
     train_ds += chain_sum(tokenizer, size=sz)
     sz = int(ds_size * 0.1)
     train_ds += zebra_puzzles(tokenizer, size=sz)
@@ -371,18 +370,19 @@ def prog_graph(
     axes[1].plot(np.cumsum(all_rewards) / (np.arange(len(all_rewards)) + 1), color="tab:blue", alpha=0.8, linestyle=':', label='Cumulative Sum')
     axes[1].plot(mean_map(all_rewards), color="tab:blue", alpha=0.8, linestyle='--', label='Mean Win. 20')
     # axes[1].plot(gaussian_filter1d(all_rewards, sigma=2.5), linewidth=2, color="tab:blue", label='Smoothen')
-    # axes[1].fill_between(
-    #     np.arange(len(all_rewards)),
-    #     all_rewards - std_rewards,
-    #     all_rewards + std_rewards,
-    #     color="tab:blue",
-    #     alpha=0.15,
-    #     # label="±1 Std"
-    # )
-    # axes[1].plot(all_rewards, alpha=1, color="tab:blue", label='Reward (batch-mean)')
+    axes[1].fill_between(
+        np.arange(len(all_rewards)),
+        all_rewards - std_rewards,
+        all_rewards + std_rewards,
+        color="tab:blue",
+        alpha=0.15,
+        # label="±1 Std"
+    )
+    axes[1].plot(all_rewards, alpha=1, color="tab:blue", label='Reward (batch-mean)')
     axes[1].set_title("Rewards")
     axes[1].legend()
     axes[1].grid(True)
+    axes[1].set_ylim(bottom=0)
 
     itrs = [x[0]['iter'] for x in eval_rewards]
     eval_greedy = []
@@ -550,7 +550,7 @@ def interpolate_models(past_model: nn.Module, present_model: nn.Module, weight: 
     return tree_unflatten(new_weights)
 
 
-def soft_gate(x, advantages, t_pos=1, t_neg=1.05):
+def soft_gate(x, advantages, t_pos=1, t_neg=1.07):
     # SAPO default: t_pos=1, t_neg=1.05
     temp = mx.where(advantages > 0, t_pos, t_neg)
     return mx.sigmoid(temp * (x-1)) * (4 / temp)
@@ -789,7 +789,14 @@ def grpo_train_loop(
                     tokenizer,
                     prompt_tokens,
                     max_tokens=max_ans_len,
-                    sampler=partial(sampler, temperature=TrainConfig.TEMPERATURE, min_p=TrainConfig.MIN_P, top_p=TrainConfig.TOP_P, top_k=TrainConfig.TOP_K)
+                    sampler=partial(
+                        sampler, 
+                        # temperature=TrainConfig.TEMPERATURE - (gitr * 0.2),
+                        temperature=TrainConfig.TEMPERATURE,
+                        # temperature=TrainConfig.TEMPERATURE if not isinstance(TrainConfig.TEMPERATURE, list) else TrainConfig.TEMPERATURE[gitr%len(TrainConfig.TEMPERATURE)],
+                        min_p=TrainConfig.MIN_P, 
+                        top_p=TrainConfig.TOP_P, 
+                        top_k=TrainConfig.TOP_K)
                 )
 
                 # Check unique response
@@ -828,8 +835,8 @@ def grpo_train_loop(
                     re in valid_rollout_rewards
                 ):
                     continue
-                # elif re not in valid_rollout_rewards:
-                else:
+                elif re != 1 or (re not in valid_rollout_rewards):
+                # else:
                     valid_rollout_indices.append(ridx)
                     valid_rollout_rewards.append(re)
                 if len(valid_rollout_indices) == TrainConfig.GROUP_SIZE:
@@ -880,7 +887,7 @@ def grpo_train_loop(
 
         # Optimization Step
         _loss = 0
-        for _ in range(TrainConfig.NUM_ITER):
+        for _ in range(TrainConfig.NUM_MODEL_UPDATE_MU):
             loss, grads = loss_and_grad_fn(
                 model=model,
                 model_old=model_old,
@@ -918,7 +925,7 @@ def grpo_train_loop(
                     mx.eval(model.parameters(), optimizer.state)
                     # print("Model weight updated")
             
-            _loss += (loss.item() / TrainConfig.NUM_ITER)
+            _loss += (loss.item() / TrainConfig.NUM_MODEL_UPDATE_MU)
             skipped = False
 
         losses.append(_loss)

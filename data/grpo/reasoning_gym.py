@@ -9,6 +9,8 @@ import string
 
 
 JUDGE_TOKENS = 128 + 64
+EVAL_SCORE_THRESHOLD = 0.5
+LLM_JUDGE_WEIGHT = 0
 
 brainstorm_sentences = [
     "\nThink through the problem step by step, then present the final answer on the last line.",
@@ -42,7 +44,7 @@ def word_parser(inp):
     words = list(filter(lambda x: x.strip() != '', words))
     return words
 
-def diff_scorer(ground, pred, margin=25):
+def diff_scorer(ground, pred, margin=10):
     ground = float(ground)
     pred = float(pred)
     if abs(ground - pred) <= margin:
@@ -97,9 +99,12 @@ def needle_haystack_parser(llm_gen, entry, score_fn):
     score = 0
     if ans in names:
         p = names.index(ans)
-        score = (1 / len(names[p:])) * 0.5
-    judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
-    return min(score + judge_score * 0.5, 1)
+        score = (1 / len(names[p:]))
+    if score >= EVAL_SCORE_THRESHOLD and LLM_JUDGE_WEIGHT > 0:
+        judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
+    else:
+        judge_score = 0
+    return min(score * (1-LLM_JUDGE_WEIGHT) + judge_score * LLM_JUDGE_WEIGHT, 1)
 
 
 def needle_haystack(tokenizer, size=500, prompt_token_len=None):
@@ -140,12 +145,17 @@ def syllogism_parser(llm_gen, entry, score_fn):
     score = 0
     if answer in words:
         p = words.index(answer)
-        score = (1 / len(words[p:])) * 0.5
+        score = (1 / len(words[p:]))
     first_word = word_parser(llm_gen)[0]
     if answer == first_word:
-        score = max(score, 0.4)
-    judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
-    return min(score + judge_score * 0.5, 1)
+        score = max(score, 0.9)
+
+    if score >= EVAL_SCORE_THRESHOLD and LLM_JUDGE_WEIGHT > 0:
+        judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
+    else:
+        judge_score = 0
+
+    return min(score * (1-LLM_JUDGE_WEIGHT) + judge_score * LLM_JUDGE_WEIGHT, 1)
 
 
 def syllogism(tokenizer, size=500, prompt_token_len=None):
@@ -187,11 +197,12 @@ def alice_in_wonderland_parser(llm_gen, entry, score_fn):
     last_line = last_line_parser(llm_gen)
     digits = re.findall(r'[+-]?\d+', last_line)
     if digits:
-        score = diff_scorer(entry['answer'], digits[-1]) * 0.5
-        if score >= 0.5:
+        score = diff_scorer(entry['answer'], digits[-1])
+        if score >= EVAL_SCORE_THRESHOLD and LLM_JUDGE_WEIGHT > 0:
             judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
-            return score + judge_score * 0.5
-        return score
+        else:
+            judge_score = 0
+        return min(score * (1-LLM_JUDGE_WEIGHT) + judge_score * LLM_JUDGE_WEIGHT, 1)
     return 0
 
 
@@ -275,11 +286,12 @@ def gsm_symbolic_parser(llm_gen, entry, score_fn):
     last_line = last_line_parser(llm_gen)
     digits = re.findall(r'[+-]?\d+', last_line)
     if digits:
-        score = diff_scorer(entry['answer'], digits[-1]) * 0.5
-        if score >= 0.5:
+        score = diff_scorer(entry['answer'], digits[-1])
+        if score >= EVAL_SCORE_THRESHOLD and LLM_JUDGE_WEIGHT > 0:
             judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
-            return score + judge_score * 0.5
-        return score
+        else:
+            judge_score = 0
+        return max(score * (1-LLM_JUDGE_WEIGHT) + judge_score * LLM_JUDGE_WEIGHT, 1)
     return 0
 
 
@@ -311,39 +323,39 @@ def gsm_symbolic(tokenizer, size=500, prompt_token_len=None):
     return dataset_list
 
 
-def list_functions_parser(llm_gen, entry, score_fn):
-    return score_fn(llm_gen.strip(), entry)
+# def list_functions_parser(llm_gen, entry, score_fn):
+#     return score_fn(llm_gen.strip(), entry)
 
 
-def list_functions(tokenizer, size=500, prompt_token_len=None):
-    dataset = reasoning_gym.create_dataset(
-        name="list_functions",   # task name
-        seed = 42,
-        size = size,
-    )
-    score_fn = get_score_answer_fn("list_functions")
+# def list_functions(tokenizer, size=500, prompt_token_len=None):
+#     dataset = reasoning_gym.create_dataset(
+#         name="list_functions",   # task name
+#         seed = 42,
+#         size = size,
+#     )
+#     score_fn = get_score_answer_fn("list_functions")
 
-    dataset_list = []
-    for data in dataset:
-        # user_suffix, llm_prefix = generate_think_string()
-        dataset_list.append({
-            'prompt': tokenizer.apply_chat_template(
-                [
-                    {'role': 'user', 'content': data['question']} #+ user_suffix},
-                    # {'role': 'assistant', 'content': llm_prefix}
-                ],
-                add_generation_prompt=True,
-                tokenize=False,
-                continue_final_message=False,
-            ),
-            'answer': data['answer'],
-            'scorer': partial(list_functions_parser, entry=data, score_fn=score_fn)
-        })
+#     dataset_list = []
+#     for data in dataset:
+#         # user_suffix, llm_prefix = generate_think_string()
+#         dataset_list.append({
+#             'prompt': tokenizer.apply_chat_template(
+#                 [
+#                     {'role': 'user', 'content': data['question']} #+ user_suffix},
+#                     # {'role': 'assistant', 'content': llm_prefix}
+#                 ],
+#                 add_generation_prompt=True,
+#                 tokenize=False,
+#                 continue_final_message=False,
+#             ),
+#             'answer': data['answer'],
+#             'scorer': partial(list_functions_parser, entry=data, score_fn=score_fn)
+#         })
 
-    if prompt_token_len:
-        dataset_list = list(filter(lambda x: len(tokenizer.encode(x['prompt'])) <= prompt_token_len, dataset_list))
+#     if prompt_token_len:
+#         dataset_list = list(filter(lambda x: len(tokenizer.encode(x['prompt'])) <= prompt_token_len, dataset_list))
 
-    return dataset_list
+#     return dataset_list
 
 
 # def codeio_parser(llm_gen, entry, score_fn):
@@ -390,11 +402,12 @@ def chain_sum_parser(llm_gen, entry, score_fn):
     last_line = last_line_parser(llm_gen)
     digits = re.findall(r'[+-]?\d+', last_line)
     if digits:
-        score = diff_scorer(entry['answer'], digits[-1]) * 0.5
-        if score >= 0.5:
+        score = diff_scorer(entry['answer'], digits[-1])
+        if score >= EVAL_SCORE_THRESHOLD and LLM_JUDGE_WEIGHT > 0:
             judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
-            return score + judge_score * 0.5
-        return score
+        else:
+            judge_score = 0
+        return min(score * (1-LLM_JUDGE_WEIGHT) + judge_score * LLM_JUDGE_WEIGHT, 1)
     return 0
 
 
@@ -434,9 +447,12 @@ def acre_parser(llm_gen, entry, score_fn):
     score = 0
     if ans in words:
         p = words.index(ans)
-        score = (1 / len(words[p:])) * 0.5
-    judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
-    return min(score + judge_score * 0.5, 1)
+        score = (1 / len(words[p:]))
+    if score >= EVAL_SCORE_THRESHOLD and LLM_JUDGE_WEIGHT > 0:
+        judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
+    else:
+        judge_score = 0
+    return min(score * (1-LLM_JUDGE_WEIGHT) + judge_score * LLM_JUDGE_WEIGHT, 1)
 
 
 def acre(tokenizer, size=500, prompt_token_len=None):
@@ -475,9 +491,12 @@ def zebra_puzzles_parser(llm_gen, entry, score_fn):
     score = 0
     if ans in words:
         p = words.index(ans)
-        score = (1 / len(words[p:])) * 0.5
-    judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
-    return min(judge_score + score, 1)
+        score = (1 / len(words[p:]))
+    if score >= EVAL_SCORE_THRESHOLD and LLM_JUDGE_WEIGHT > 0:
+        judge_score = response_judge(entry['question'], response=llm_gen, n_tokens=JUDGE_TOKENS, ref_answer=entry['answer'])[1]
+    else:
+        judge_score = 0
+    return min(judge_score * LLM_JUDGE_WEIGHT + score * (1-LLM_JUDGE_WEIGHT), 1)
 
 
 def zebra_puzzles(tokenizer, size=500, prompt_token_len=None):

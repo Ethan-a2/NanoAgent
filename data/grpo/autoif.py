@@ -5,6 +5,8 @@ from .verifiers import get_llm_response, response_judge
 
 
 docker_sandbox = DockerSandbox()
+EVAL_SCORE_THRESHOLD = 0.1
+JUDGE_TOKENS = 128 + 64
 
 def scorer(response, eval_func, question):
     results = []
@@ -18,11 +20,11 @@ def scorer(response, eval_func, question):
         results.append(result)
 
     final_result = sum([float(r) for r in results]) / len(results)
-    # if final_result > 0:
-    judge_score = response_judge(question=question, response=response, n_tokens=128+64)[1]
-    final_result = final_result * 0.5 + judge_score * 0.5
-
-    return final_result
+    if final_result >= EVAL_SCORE_THRESHOLD:
+        judge_score = response_judge(question=question, response=response, n_tokens=JUDGE_TOKENS)[1]
+    else:
+        judge_score = 0
+    return final_result * 0.5 + judge_score * 0.5
 
 
 def autoif_ds(tokenizer, prompt_token_len):
