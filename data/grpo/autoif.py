@@ -5,7 +5,7 @@ from .verifiers import get_llm_response, response_judge
 
 
 docker_sandbox = DockerSandbox()
-EVAL_SCORE_THRESHOLD = 0.1
+EVAL_SCORE_THRESHOLD = 0.9
 JUDGE_TOKENS = 128 + 64
 
 def scorer(response, eval_func, question):

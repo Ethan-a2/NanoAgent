@@ -13,12 +13,12 @@ import ollama
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-OLLAMA_MODEL = "qwen3:4b"
-# OLLAMA_MODEL = "qwen3:1.7b"
+# OLLAMA_MODEL = "qwen3:4b"
+OLLAMA_MODEL = "qwen3:1.7b"
 # OLLAMA_MODEL = "qwen3:0.6b"
 # OLLAMA_MODEL = "gemma3:270m"
 
-def response_judge(question, response, n_tokens, ref_answer=None):
+def response_judge(question, response, n_tokens, ref_answer=None, strict_level=0):
     if ref_answer:
         ref_answer = f'Here is a reference answer that would be helpful for your evaluation:\n# Reference Answer:\n{ref_answer}\n\n---'
     else:
@@ -31,7 +31,7 @@ Give your answer on a scale of 1 to 4, where 1 means that the system_answer is n
 Here is the scale you should use to build your answer:
 1: The system_answer is terrible: completely irrelevant to the question asked, or very partial, or strongly incorrect, or repeats every information present in the question
 2: The system_answer is mostly not helpful: misses some key instructions of the question, repeats steps needlessly, answer is mostly incorrect and contains missinformation
-3: The system_answer is mostly helpful: provides support follows most instructions, but still could be improved, answer can be somewhat incorrect, with lesser missinformation
+3: The system_answer is mostly helpful: follows most instructions but could be improved, answer can be somewhat incorrect
 4: The system_answer is excellent: relevant, direct, detailed, and addresses all the instructions in the question
 
 You can award 1 bonus point (making total score to 5) if the reply has step-by-step correct explanation of how the final answer is derived.
@@ -46,17 +46,17 @@ You MUST provide values for 'Evaluation:' and 'Total rating:' in your answer.
 
 Now here are the question and answer.
 
-# Question:\n{question}
+# Question:\n\n{question}
 
 ---
 
-# Answer:\n{response}
+# Answer:\n\n{response}
 
 ---
 
 {ref_answer}
 
-Provide your feedback. Try your best to give a correct rating.
+Provide your concise feedback. Try your best to give a correct rating.
 Feedback:::
 '''
 
@@ -70,7 +70,7 @@ Feedback:::
     digits = re.findall(r'\d+', last_line)
     digits = list(map(int, digits))
     if digits and 0 < digits[-1] <= 5:
-        score = digits[-1] / 5
+        score = (digits[-1] - strict_level) / (5 - strict_level)
     else:
         score = 0
 
@@ -80,7 +80,7 @@ Feedback:::
     # print(response)
     # print('Extracted Score:', score)
 
-    return response, min(max(score, 1), 0)
+    return response, max(min(score, 1), 0)
 
 
 def get_llm_response(messages, think=False, n_tokens=2):
@@ -262,9 +262,51 @@ def thinking_scorer(llm_gen, tools_gen, def_tools):
     return 0
 
 
+
+def is_think_answer(inp_str):
+    # Source: https://github.com/allenai/open-instruct/blob/7ba4cd0/scripts/data/filtering_and_updates/filter_cots.py
+    """
+    Return True if the string has the exact form
+    <think>...</think><answer>...</answer>, False otherwise.
+    Also returns false if 'messages' or last message's 'content' is None
+    """
+    pattern = re.compile(r'^<think>[\s\S]*?</think><answer>[\s\S]*?</answer>$')
+    try:
+        return bool(pattern.fullmatch(inp_str))
+    except Exception:
+        # print(f"KeyError: 'messages' or 'content' not found in element")
+        return False
+
+def is_think(inp_str):
+    # Source: https://github.com/allenai/open-instruct/blob/7ba4cd0/scripts/data/filtering_and_updates/filter_cots.py
+    """
+    Return True if the string has the exact form
+    <think>...</think>, False otherwise.
+    Also returns false if 'messages' or last message's 'content' is None
+    """
+    pattern = re.compile(r'^<think>[\s\S]*?</think>[\s\S]*?$')
+    try:
+        return bool(pattern.fullmatch(inp_str))
+    except Exception:
+        # print(f"KeyError: 'messages' or 'content' not found in element")
+        return False
+
+
+def remove_thinking_section(prediction: str) -> str:
+    prediction = prediction.replace("<|assistant|>", "").strip()
+    # remove thinking section from the prediction
+    prediction = prediction.split("</think>")[-1]
+    # remove answer tags from the prediction
+    prediction = prediction.replace("<answer>", "").replace("</answer>", "")
+    return prediction.strip()
+
+
 if __name__ == '__main__':
     pass
 #     The best way to invest in crypto currency. Use the phrase "the best of both worlds".<|im_end|>
 # <|im_start|>assistant
 
 # 1.00: No, "the best of both worlds" is not the phrase but rather a sentiment that suggests a combination of benefits from both forms of investment, making it ideal for someone looking for a balanced strategy.<|im_end|>
+
+
+

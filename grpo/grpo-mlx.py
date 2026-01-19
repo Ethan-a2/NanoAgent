@@ -7,7 +7,7 @@
 
 import json
 import os
-os.environ['HF_HUB_OFFLINE'] = '1'
+# os.environ['HF_HUB_OFFLINE'] = '1'
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -36,6 +36,7 @@ from data.grpo.websearch_tool import tool_calling_traces
 from data.grpo.mobile_actions import mobileactions
 # from data.grpo.easy_math import easymath
 from data.grpo.autoif import autoif_ds
+from data.grpo.ifeval import ifeval_ds
 # from data.grpo.gorilla_tool import gorilla_openfun
 from data.grpo.reasoning_gym import *
 from scipy.ndimage import gaussian_filter1d
@@ -61,35 +62,36 @@ class TrainConfig:
     LOAD_PREV = False
     LEARNING_RATE = 1e-5
     WEIGHT_DECAY = 0
-    EPSILON_MIN = 3e-2    # Sequence/GSPO: 3e-4 | GRPO: 0.2 |   Note: Should not be changed
+    EPSILON_MIN = 3e-2   # Sequence/GSPO: 3e-4 | GRPO: 0.2 |   Note: Should not be changed
     EPSILON_HIGH = 4e-2   # Sequence/GSPO: 4e-4 | GRPO: 0.272 | Note: Can be changed 
     GROUP_SIZE = 4
     WARMUP_STEPS = 50 # 50
     DECAY_STEPS = 40 # 10
-    BETA = 0.04 # 0.04
+    BETA = 0 # 0.04
     UPDATE_WEIGHT = 1 # 4 - Could give smoother & stable learning while compromising memory
     EVAL_STEPS = 100
     NUM_MODEL_UPDATE_MU = 1
     GRAD_ACCUM = 1
     GRAD_NORM = 1
     REF_MODEL_MIXUP_ALPHA = 0 # 0.6
-    MAX_INPUT_LEN = 512 # 768
-    SAVE_PATH = "weights/NanoAgent-135M-grpo"
+    MAX_INPUT_LEN = 256 # 768
+    SAVE_PATH = "weights/NanoAgent-135M-gspo"
     DATA_PATH = "data/datasets/grpo_mix.pickle"
-    MODEL = "quwsarohi/NanoAgent-135M" # "HuggingFaceTB/SmolLM2-135M-Instruct" "weights/SmolLM2-360M-mlx-instruct"
+    MODEL = "quwsarohi/NanoAgent-135M" #"google/functiongemma-270m-it" #"weights/SmolLM2-360M-mlx-instruct" #"quwsarohi/NanoAgent-135M" # "HuggingFaceTB/SmolLM2-135M-Instruct" "weights/SmolLM2-360M-mlx-instruct"
+    FREEZE_LAYERS = []
     QUANTIZATION = None
     GRADIENT_CHECKPOINT_LAYERS = 6
     EVAL_SAMPLES = 100
     TQDM = True
-    STD_NORM = False
-    CONST_TOK_SCALE = True
-    SAMPLING = "token"
+    STD_NORM = True
+    CONST_TOK_SCALE = False
+    SAMPLING = "sequence"
     SOFT_CLIP = False # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
     # TEMPERATURE = [0.9, 0.8, 0.7, .65, 0.6, 0.5] #0.7 # Better to keep <= 0.9
-    TEMPERATURE = 1 #0.7
+    TEMPERATURE = 0.7 # 0.7
     MIN_P = None # Expected ~0.2 for Smollm2-135M
     TOP_K = None
-    TOP_P = None # Important: Only ~ 0.95 gave increasing reward for Smollm2-135M
+    TOP_P = 0.9 # Important: Only ~ 0.95 gave increasing reward for Smollm2-135M
 
 # GSPO Constraints:
 # -----------------
@@ -270,27 +272,29 @@ def tool_tokens(ground_tool_call):
 
 
 if TrainConfig.GENERATE_DATA:
-    ds_size = 2 * TrainConfig.ITERS
-    sz = int(ds_size * 0.35)
-    train_ds = autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN)
-    train_ds = sorted(train_ds, key=lambda x: len(x['prompt']), reverse=True)[:sz]
-    sz = int(ds_size * 0.5)
-    train_ds += tool_calling_traces(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
+    ds_size = 4 * TrainConfig.ITERS
+    train_ds = []
+    sz = int(ds_size * 1)
+    # train_ds = autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN)
+    # train_ds = sorted(train_ds, key=lambda x: len(x['prompt']), reverse=True)[:sz]
+    train_ds = ifeval_ds(tokenizer, TrainConfig.MAX_INPUT_LEN, 2)
+    # sz = int(ds_size * 0.5)
+    # train_ds += tool_calling_traces(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
     # sz = int(ds_size * 0.025)
     # train_ds += mobileactions(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
-    sz = int(ds_size * 0.1)
-    train_ds += needle_haystack(tokenizer, size=sz*3, prompt_token_len=TrainConfig.MAX_INPUT_LEN)[:sz]
-    sz = int(ds_size * 0.15)
-    train_ds += alice_in_wonderland(tokenizer=tokenizer, size=sz)
+    # sz = int(ds_size * 0.1)
+    # train_ds += needle_haystack(tokenizer, size=sz*3, prompt_token_len=TrainConfig.MAX_INPUT_LEN)[:sz]
     # sz = int(ds_size * 0.15)
-    # train_ds += syllogism(tokenizer, size=sz)
-    sz = int(ds_size * 0.1)
-    train_ds += gsm_symbolic(tokenizer, size=sz)
-    sz = int(ds_size * 0.1)
-    train_ds += chain_sum(tokenizer, size=sz)
-    sz = int(ds_size * 0.1)
-    train_ds += zebra_puzzles(tokenizer, size=sz)
-    random.shuffle(train_ds)
+    # train_ds += alice_in_wonderland(tokenizer=tokenizer, size=sz)
+    # # sz = int(ds_size * 0.15)
+    # # train_ds += syllogism(tokenizer, size=sz)
+    # sz = int(ds_size * 0.1)
+    # train_ds += gsm_symbolic(tokenizer, size=sz)
+    # sz = int(ds_size * 0.1)
+    # train_ds += chain_sum(tokenizer, size=sz)
+    # sz = int(ds_size * 0.1)
+    # train_ds += zebra_puzzles(tokenizer, size=sz)
+    # random.shuffle(train_ds)
     print("New Generated Dataset length:", len(train_ds))
     with open(TrainConfig.DATA_PATH, 'wb') as fp:
         pickle.dump(train_ds, fp, protocol=pickle.HIGHEST_PROTOCOL)
@@ -307,6 +311,28 @@ if TrainConfig.EVAL_SAMPLES:
 else:
     eval_ds = None
 
+# import ast
+# # inst_counter = defaultdict(int)
+# def ifeval_sort(data):
+#     global inst_counter
+#     constraints = data['ground_truth']
+#     if not constraints:
+#         # inst_counter[0] += 1
+#         return 0
+#     constraints = ast.literal_eval(constraints[0])
+#     if not constraints:
+#         # inst_counter[0] += 1
+#         return 0
+#     constraints = constraints[0].get('instruction_id')
+#     # inst_counter[len(constraints)] += 1
+#     # print(len(constraints))
+#     return len(constraints)
+
+
+# print("IF-Eval Instruction Counter:", inst_counter)
+# train_ds = sorted(train_ds, key=ifeval_sort)
+# print(train_ds[0]['ground_truth'])
+
 
 def evaluate(eval_model, runs=4, temp=0.):
     # return [0]
@@ -314,8 +340,9 @@ def evaluate(eval_model, runs=4, temp=0.):
         return [0]
     rewards = []
     eval_model.eval()
-    for idx, data in enumerate(eval_ds):
+    for idx in tqdm.tqdm(range(len(eval_ds)), leave=False):
         # Removing tool_call lead
+        data = eval_ds[idx]
         prompt_tokens = tokenizer.encode(data['prompt'])
         scorer = data['scorer']
         for _ in range(runs):
@@ -621,7 +648,7 @@ def grpo_loss_fn(
     # Ratio is converted from log values using exp(log)
     if TrainConfig.SAMPLING == 'sequence':
         # GSPO Equation: https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide/gspo-reinforcement-learning?q=learning+rage
-        ratio = ((log_probs - old_log_probs) * pad_mask).sum(axis=-1) / TrainConfig.GEN_LEN
+        ratio = ((log_probs - old_log_probs) * pad_mask).sum(axis=-1) / pad_mask.sum(axis=-1)
         ratio = mx.exp(ratio)
         if not TrainConfig.SOFT_CLIP:
             clipped_ratio = mx.clip(ratio, 1.0 - TrainConfig.EPSILON_MIN, 1.0 + TrainConfig.EPSILON_HIGH)
@@ -998,18 +1025,21 @@ def grpo_train_loop(
 model.unfreeze()
 mx.eval(model)
 
+# print(model)
+
 # Freeze model weights
 # params = tree_flatten(model.parameters())
 # freeze_keys = []
 # for key, value in params:
-#     special_layers = ['embed', 'lm_head', 'softmax', 'output', 'classifier']
+#     special_layers = ['embed', 'embed_tokens', 'lm_head', 'softmax', 'output', 'classifier']
 #     if any(k in key for k in special_layers) or (value.ndim < 1):
 #         print(key)
 #         freeze_keys.append(key)
 # model.freeze(recurse=True, keys=freeze_keys)
 
-# special_layers = ['embed', 'lm_head', 'softmax', 'output', 'classifier']
-# model.apply_to_modules(lambda k, v: v.freeze() if any(n in k for n in special_layers) else None)
+# special_layers = ['embed', 'embed_tokens', 'lm_head', 'softmax', 'output', 'classifier']
+if TrainConfig.FREEZE_LAYERS:
+    model.apply_to_modules(lambda k, v: v.freeze() if any(n in k for n in TrainConfig.FREEZE_LAYERS) else None)
 
 # all_params = tree_flatten(model.parameters())
 # trainable_keys = set(k for k, _ in tree_flatten(model.trainable_parameters()))

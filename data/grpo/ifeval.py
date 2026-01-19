@@ -2,6 +2,7 @@
 
 
 import ast
+import re
 import json
 from functools import partial
 from data.grpo.IFEvalG import instructions_registry
@@ -9,6 +10,16 @@ from abc import ABC, abstractmethod
 from typing import Any
 import asyncio
 from datasets import load_dataset
+from data.grpo.verifiers import response_judge
+
+
+def filter_non_english(text: str) -> bool:
+    """
+    Detects if the given text contains characters that are not basic English.
+    English includes A-Z, a-z, 0-9, and basic punctuation.
+    """
+    # Match anything that is not basic English letters, numbers or punctuation
+    return not bool(re.search(r"[^\x00-\x7F]", text))
 
 
 def remove_thinking_section(prediction: str) -> str:
@@ -87,7 +98,7 @@ class IFEvalVerifier(VerifierFunction):
     def __init__(self) -> None:
         super().__init__("ifeval", weight=1.0)
 
-    def __call__(self, prediction: str, label: str | dict) -> float:
+    def __call__(self, prediction: str, label: str | dict, question: str) -> float:
         instruction_dict = instructions_registry.INSTRUCTION_DICT
         constraint_dict = ast.literal_eval(label)
         constraint_dict = constraint_dict[0]
@@ -112,25 +123,40 @@ class IFEvalVerifier(VerifierFunction):
                 rewards.append(1.0)
             else:
                 rewards.append(0.0)
-        return sum(rewards) / len(rewards)
+        score = sum(rewards) / len(rewards)
+        if score <= 0:
+            return score
+        
+        n_tries = 1
+        judge_scores = []
+        for _ in range(n_tries):
+            judge_resp, judge_score = response_judge(question=question, response=prediction, n_tokens=512, strict_level=2)
+            judge_scores.append(judge_score)
+        # print("Judge Scores:", judge_scores)
+        return score * (sum(judge_scores) / len(judge_scores))
     
 
 scorer = IFEvalVerifier()
 
-def ifeval_ds(tokenizer, prompt_token_len):
+def ifeval_ds(tokenizer, prompt_token_len, n_instructions=None):
     dataset = load_dataset("allenai/Dolci-RL-Zero-IF-7B")['train']
     # dataset = dataset.map(lambda x: {'eval_funcs': list(set(x['eval_funcs']))})
     dataset = dataset.map(lambda x: {
+        'question': x['prompt'].strip().lstrip('user:').strip(),
         'prompt': tokenizer.apply_chat_template(
             [{'role': 'user', 'content': x['prompt'].strip().lstrip('user:').strip()}],
             add_generation_prompt=True,
             tokenize=False,
             continue_final_message=False,
     )})
+    dataset = dataset.filter(lambda d: filter_non_english(d['question']))
     dataset = dataset.remove_columns(['constraint'])
     dataset = [d for d in dataset]
     for i in range(len(dataset)):
-        dataset[i]['scorer'] = partial(scorer, label=dataset[i]['ground_truth'][0])
+        dataset[i]['scorer'] = partial(scorer, label=dataset[i]['ground_truth'][0], question=dataset[i]['question'])
+
+    if n_instructions:
+        dataset = list(filter(lambda x: len(ast.literal_eval(x['ground_truth'][0])[0]['instruction_id']) <= n_instructions, dataset))
     dataset = list(filter(lambda x: len(tokenizer.encode(x['prompt'])) <= prompt_token_len, dataset))
     return dataset
 
