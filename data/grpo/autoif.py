@@ -4,11 +4,15 @@ from .sandbox import DockerSandbox
 from .verifiers import get_llm_response, response_judge
 
 
-docker_sandbox = DockerSandbox()
+docker_sandbox = None
 EVAL_SCORE_THRESHOLD = 0.9
 JUDGE_TOKENS = 128 + 64
 
 def scorer(response, eval_func, question):
+    global docker_sandbox
+    if docker_sandbox is None:
+        docker_sandbox = DockerSandbox()
+
     results = []
     for ef in eval_func:
         code_string = f"{ef}\n\nresponse = '{response}'\n\nprint(evaluate(response))"

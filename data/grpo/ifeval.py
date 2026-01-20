@@ -47,6 +47,17 @@ def filter_non_english(text: str) -> bool:
     return not bool(re.search(r"[^\x00-\x7F]", text))
 
 
+def add_missing_periods(text: str) -> str:
+    """
+    Inserts periods between sentences when they are missing.
+    Does not split on acronyms (e.g., XYZ).
+    """
+    # Add a period before a capitalized word that follows a lowercase letter
+    # Example: "sentence This" -> "sentence. This"
+    pattern = r'(?<=[a-z])\s+(?=[A-Z][a-z])'
+    return re.sub(pattern, '. ', text)
+
+
 def remove_thinking_section(prediction: str) -> str:
     prediction = prediction.replace("<|assistant|>", "").strip()
     # remove thinking section from the prediction

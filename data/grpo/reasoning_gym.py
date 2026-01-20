@@ -131,7 +131,7 @@ def needle_haystack(tokenizer, size=500, prompt_token_len=None, think=False):
 
     dataset_list = []
     for data in dataset:
-        messages = generate_think_kshot() + [{'role': 'user', 'content': data['question']}]
+        messages = generate_think_kshot() if think else [] + [{'role': 'user', 'content': data['question']}]
         dataset_list.append({
             'prompt': tokenizer.apply_chat_template(
                 messages,
@@ -186,7 +186,7 @@ def syllogism(tokenizer, size=500, prompt_token_len=None, think=False):
 
     dataset_list = []
     for data in dataset:
-        messages = generate_think_kshot() + [{'role': 'user', 'content': data['question']}]
+        messages = generate_think_kshot() if think else [] + [{'role': 'user', 'content': data['question']}]
         dataset_list.append({
             'prompt': tokenizer.apply_chat_template(
                 messages,

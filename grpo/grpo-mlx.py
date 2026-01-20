@@ -33,13 +33,14 @@ from mlx_lm import batch_generate, generate, load, convert
 from mlx_lm.utils import load_model, save_model, dequantize_model
 from mlx_lm.sample_utils import make_sampler
 # from data.grpo.salseforce_tool import salesfores_toolcall
+
 from data.grpo.websearch_tool import tool_calling_traces
 from data.grpo.mobile_actions import mobileactions
-# from data.grpo.easy_math import easymath
 from data.grpo.autoif import autoif_ds
 from data.grpo.ifeval import ifeval_ds
 # from data.grpo.gorilla_tool import gorilla_openfun
 from data.grpo.reasoning_gym import *
+
 from scipy.ndimage import gaussian_filter1d
 from utils.utils import grad_checkpoint, split_grads
 
@@ -56,12 +57,12 @@ from utils.webtool import tool_call_extract
 class TrainConfig:
     # Iterations
     ITERS = 1000 #3_000
-    GENERATE_DATA = True
+    GENERATE_DATA = False
     BATCH_SIZE = 1
     GEN_LEN = 256 + 128
     SAVE_FREQ = 50
     LOAD_PREV = False
-    LEARNING_RATE = 2e-6
+    LEARNING_RATE = 1e-6
     WEIGHT_DECAY = 0
     EPSILON_MIN = 3e-2   # Sequence/GSPO: 3e-4 | GRPO: 0.2 |   Note: Should not be changed
     EPSILON_HIGH = 4e-2   # Sequence/GSPO: 4e-4 | GRPO: 0.272 | Note: Can be changed 
@@ -76,20 +77,19 @@ class TrainConfig:
     GRAD_NORM = 1
     REF_MODEL_MIXUP_ALPHA = 0 # 0.6
     MAX_INPUT_LEN = 256 # 768
-    SAVE_PATH = "weights/NanoAgent-135M-grpo"
+    SAVE_PATH = "weights/NanoAgent-135M-grpo-math"
     DATA_PATH = "data/datasets/grpo_mix.pickle"
-    MODEL = "quwsarohi/NanoAgent-135M" #"google/functiongemma-270m-it" #"weights/SmolLM2-360M-mlx-instruct" #"quwsarohi/NanoAgent-135M" # "HuggingFaceTB/SmolLM2-135M-Instruct" "weights/SmolLM2-360M-mlx-instruct"
+    MODEL = ["quwsarohi/NanoAgent-135M", "weights/NanoAgent-135M-core"][-1]
     FREEZE_LAYERS = [] # embed_tokens
     QUANTIZATION = None
     GRADIENT_CHECKPOINT_LAYERS = 6
     EVAL_SAMPLES = 75
     TQDM = True
-    STD_NORM = True
+    STD_NORM = False
     CONST_TOK_SCALE = False
     SAMPLING = "sequence"
     SOFT_CLIP = False # Soft clipping proposed in SAPO paper - https://arxiv.org/pdf/2511.20347
-    # TEMPERATURE = [0.9, 0.8, 0.7, .65, 0.6, 0.5] #0.7 # Better to keep <= 0.9
-    TEMPERATURE = 0.8
+    TEMPERATURE = 0.9 # Better to keep <= 0.9
     MIN_P = None # Expected ~0.2 for Smollm2-135M
     TOP_K = None
     TOP_P = 0.9 # Important: Only ~ 0.95 gave increasing reward for Smollm2-135M
@@ -129,7 +129,7 @@ assert TrainConfig.SAMPLING in ['token', 'sequence']
 assert 0 <= TrainConfig.UPDATE_WEIGHT
 assert 0 < TrainConfig.GRAD_NORM or TrainConfig.GRAD_NORM is not None
 assert 1 <= TrainConfig.GRAD_ACCUM
-assert 1 <= TrainConfig.BATCH_SIZE
+assert 1 == TrainConfig.BATCH_SIZE
 assert 0 <= TrainConfig.WEIGHT_DECAY
 
 if TrainConfig.QUANTIZATION is not None:
@@ -143,7 +143,6 @@ config_dict = {
 print(json.dumps(config_dict, indent=2))
 
 # The model that will be trained
-# MODEL_PATH = "weights/NanoAgent-135M-8bit"
 
 cache_mlx_path = os.path.join('weights', TrainConfig.MODEL.split('/')[-1])
 if not os.path.exists(cache_mlx_path):
@@ -276,27 +275,35 @@ def tool_tokens(ground_tool_call):
 if TrainConfig.GENERATE_DATA:
     ds_size = 4 * TrainConfig.ITERS
     train_ds = []
-    sz = int(ds_size * 0.5)
-    # train_ds = autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN)
+
+    # --- IF Eval ---
+    # sz = int(ds_size * 0.35)
+    # train_ds += autoif_ds(tokenizer, TrainConfig.MAX_INPUT_LEN)
     # train_ds = sorted(train_ds, key=lambda x: len(x['prompt']), reverse=True)[:sz]
-    train_ds = ifeval_ds(tokenizer, TrainConfig.MAX_INPUT_LEN, 2, kshot=True)
+    # sz = int(ds_size * 0.65)
+    # train_ds += ifeval_ds(tokenizer, TrainConfig.MAX_INPUT_LEN, 2, kshot=True)[:sz]
+    
+    # --- Tool Call ---
     # sz = int(ds_size * 0.5)
     # train_ds += tool_calling_traces(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
     # sz = int(ds_size * 0.025)
     # train_ds += mobileactions(tokenizer, TrainConfig.MAX_INPUT_LEN)[:sz]
-    # sz = int(ds_size * 0.1)
-    # train_ds += needle_haystack(tokenizer, size=sz*3, prompt_token_len=TrainConfig.MAX_INPUT_LEN)[:sz]
-    sz = int(ds_size * 0.125)
+
+    # --- Math Mix ---
+    sz = int(ds_size * 0.25)
     train_ds += alice_in_wonderland(tokenizer=tokenizer, size=sz, think=False)
-    # # sz = int(ds_size * 0.15)
-    # # train_ds += syllogism(tokenizer, size=sz)
-    sz = int(ds_size * 0.125)
-    train_ds += gsm_symbolic(tokenizer, size=sz, think=False)
     sz = int(ds_size * 0.1)
+    train_ds += syllogism(tokenizer, size=sz, think=False)
+    sz = int(ds_size * 0.3)
+    train_ds += gsm_symbolic(tokenizer, size=sz, think=False)
+    sz = int(ds_size * 0.15)
     train_ds += chain_sum(tokenizer, size=sz, think=False)
     sz = int(ds_size * 0.1)
-    train_ds += zebra_puzzles(tokenizer, size=sz)
-    # random.shuffle(train_ds)
+    train_ds += zebra_puzzles(tokenizer, size=sz, think=False)
+    sz = int(ds_size * 0.1)
+    train_ds += needle_haystack(tokenizer, size=sz*3, prompt_token_len=TrainConfig.MAX_INPUT_LEN, think=False)[:sz]
+    
+    random.shuffle(train_ds)
     print("New Generated Dataset length:", len(train_ds))
     with open(TrainConfig.DATA_PATH, 'wb') as fp:
         pickle.dump(train_ds, fp, protocol=pickle.HIGHEST_PROTOCOL)
@@ -514,6 +521,9 @@ def save_state(
         )
     save_model(save_path=path, model=dequantize_model(deepcopy(model)))
 
+    if max(eval_rewards) == eval_rewards[-1]:
+        save_model(save_path=os.path.join(path, 'best_weight'), model=dequantize_model(deepcopy(model)))
+
     train_info = {
         "training_params": {
             **config_dict,
@@ -725,7 +735,8 @@ def rollout_batch(prompt, scorer, tokenizer, model, group_size):
             tokenizer_mlx,
             prompt_tokens,
             max_tokens=TrainConfig.GEN_LEN,
-            sampler=sampler
+            # Hack: Add one greedy decoding
+            sampler=sampler if gitr != 0 else None
         )
 
         response_tokens = tokenizer.encode(response, add_special_tokens=False)
