@@ -17,15 +17,19 @@ JUDGE_SCRICT_LEVEL = 2
 
 
 def generate_think_kshot():
-    sys_prompt = "You are a helpful AI assistant. " + random.choice(THINK_STRINGS)
+    sys_prompt = "You are a helpful AI assistant. " + random.choice(THINK_STRINGS).strip()
     return [
         {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": "What is 4+6-1?"},
-        {
-            "role": "assistant",
-            "content": "<think>This is a math problem. Let's solve it in pairs.\n - 4 + 6 = 10\n - 10 - 1 = 9\n\nSo, answer is 9</think>\n\nThe answer is 9.",
-        },
-    ]
+    ] + random.choice([
+        [
+            {"role": "user", "content": "What is 4+6-1?"},
+            {
+                "role": "assistant",
+                "content": "<think>\nThis is a math problem. Let's solve it in pairs.\n - 4 + 6 = 10\n - 10 - 1 = 9\n\nSo, answer is 9\n</think>\n\nThe answer is 9.",
+            },
+        ],
+        []
+    ])
 
 
 brainstorm_sentences = [
@@ -171,9 +175,9 @@ def needle_haystack(tokenizer, size=500, prompt_token_len=None, think=False):
     dataset_list = []
     for data in dataset:
         messages = (
-            generate_think_kshot()
+            (generate_think_kshot()
             if think
-            else [] + [{"role": "user", "content": data["question"]}]
+            else []) + [{"role": "user", "content": data["question"]}]
         )
         dataset_list.append(
             {
@@ -213,8 +217,8 @@ def syllogism_parser(llm_gen, llm_judge, entry, score_fn, think):
     if answer in words:
         p = words.index(answer)
         score = 1 / len(words[p:])**2
-    first_word = word_parser(llm_gen)[0]
-    if answer == first_word:
+    first_word = word_parser(llm_gen)
+    if first_word and answer == first_word[0]:
         score = max(score, 1.0)
 
     if score > 0 and llm_judge:
@@ -246,9 +250,9 @@ def syllogism(tokenizer, size=500, prompt_token_len=None, think=False):
     dataset_list = []
     for data in dataset:
         messages = (
-            generate_think_kshot()
+            (generate_think_kshot()
             if think
-            else [] + [{"role": "user", "content": data["question"]}]
+            else []) + [{"role": "user", "content": data["question"]}]
         )
         dataset_list.append(
             {
@@ -310,9 +314,9 @@ def alice_in_wonderland(tokenizer, size=500, prompt_token_len=None, think=False)
     for data in dataset:
         # user_suffix, llm_prefix = generate_think_string()
         messages = (
-            generate_think_kshot()
+            (generate_think_kshot()
             if think
-            else [] + [{"role": "user", "content": data["question"]}]
+            else []) + [{"role": "user", "content": data["question"]}]
         )
         dataset_list.append(
             {
@@ -423,9 +427,9 @@ def gsm_symbolic(tokenizer, size=500, prompt_token_len=None, think=False):
     for data in dataset:
         # user_suffix, llm_prefix = generate_think_string()
         messages = (
-            generate_think_kshot()
+            (generate_think_kshot()
             if think
-            else [] + [{"role": "user", "content": data["question"]}]
+            else []) + [{"role": "user", "content": data["question"]}]
         )
         dataset_list.append(
             {
@@ -560,9 +564,9 @@ def chain_sum(tokenizer, size=500, prompt_token_len=None, think=False):
     dataset_list = []
     for data in dataset:
         messages = (
-            generate_think_kshot()
+            (generate_think_kshot()
             if think
-            else [] + [{"role": "user", "content": data["question"]}]
+            else []) + [{"role": "user", "content": data["question"]}]
         )
         dataset_list.append(
             {
@@ -625,9 +629,9 @@ def acre(tokenizer, size=500, prompt_token_len=None, think=False):
     dataset_list = []
     for data in dataset:
         messages = (
-            generate_think_kshot()
+            (generate_think_kshot()
             if think
-            else [] + [{"role": "user", "content": data["question"]}]
+            else []) + [{"role": "user", "content": data["question"]}]
         )
         dataset_list.append(
             {
@@ -690,9 +694,9 @@ def zebra_puzzles(tokenizer, size=500, prompt_token_len=None, think=False):
     dataset_list = []
     for data in dataset:
         messages = (
-            generate_think_kshot()
+            (generate_think_kshot()
             if think
-            else [] + [{"role": "user", "content": data["question"]}]
+            else []) + [{"role": "user", "content": data["question"]}]
         )
         dataset_list.append(
             {

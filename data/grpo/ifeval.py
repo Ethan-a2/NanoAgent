@@ -130,7 +130,7 @@ class IFEvalVerifier(VerifierFunction):
     def __init__(self) -> None:
         super().__init__("ifeval", weight=1.0)
 
-    def __call__(self, prediction: str, label: str | dict, question: str) -> float:
+    def __call__(self, prediction: str, llm_judge, label: str | dict, question: str) -> float:
         instruction_dict = instructions_registry.INSTRUCTION_DICT
         constraint_dict = ast.literal_eval(label)
         constraint_dict = constraint_dict[0]
@@ -160,16 +160,15 @@ class IFEvalVerifier(VerifierFunction):
             return score
         
         # LLM reward hacking the answer
-        if len(prediction.strip().split()) <= 16:
+        if len(prediction.strip().split()) <= 32:
             return 0
         
-        n_tries = 1
-        judge_scores = []
-        for _ in range(n_tries):
+        if score > 0 and llm_judge:
             judge_resp, judge_score = response_judge(question=question, response=prediction, n_tokens=512, strict_level=2)
-            judge_scores.append(judge_score)
-        # print("Judge Scores:", judge_scores)
-        return score * (sum(judge_scores) / len(judge_scores))
+            judge_score = (judge_score * 3) / 2
+            score *= judge_score
+        
+        return score
     
 
 scorer = IFEvalVerifier()

@@ -4,8 +4,12 @@ from datasets import load_dataset
 from .sandbox import DockerSandbox
 from .verifiers import get_llm_response, response_judge
 
-def general_chat_scorer(llm_gen, question, ground):
-    return response_judge(question=question, response=llm_gen, ref_answer=ground, n_tokens=256, strict_level=2)[-1]
+def general_chat_scorer(llm_gen, llm_judge, question, ground):
+    if len(llm_gen.strip()) <= 256: return 0
+    score = response_judge(question=question, response=llm_gen, ref_answer=ground, n_tokens=512, strict_level=2)[-1]
+    score = (score * 3) / 2
+    return min(score, 1)
+    # return score
 
 def general_chat_ds(tokenizer, prompt_token_len):
     dataset = load_dataset("allenai/Dolci-RL-Zero-General-7B")['train']
@@ -34,11 +38,7 @@ def general_chat_ds(tokenizer, prompt_token_len):
 if __name__ == '__main__':
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained("quwsarohi/NanoAgent-135M")
-    # constraint = [{
-    #     'instruction_id': ['keywords:forbidden_words', 'length_constraints:number_paragraphs', 'count:counting_composition'], 
-    #     'kwargs': [{'forbidden_words': ['commission', 'population', 'road', 'stuff']}, {'num_paragraphs': 6}, {'n_sent': 2, 'n_words': 2}]
-    # }]
-
-    # print(ver("This is a sentence", str(constraint)))
     dataset = general_chat_ds(tokenizer, 256)
     print(dataset[0])
+    scorer = dataset[0]['scorer']
+    print(scorer(dataset[0]['ground_truth'], True))
