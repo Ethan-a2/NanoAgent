@@ -5,7 +5,7 @@
 
 import json
 import os, sys
-# os.environ['HF_HUB_OFFLINE'] = '1'
+os.environ['HF_HUB_OFFLINE'] = '1'
 
 import random
 from collections import defaultdict
@@ -38,7 +38,7 @@ class TrainConfig:
     LOAD_PREV = False
     # Learning rate
     MIN_LEARNING_RATE = 0  # 5e-8
-    WARMUP_STEPS = int(0.1 * 194057)
+    WARMUP_RATIO = 0.1
     # SQRT Scaling rule: lr_new = lr * batch_scale = 3e-3 * sqrt(1/128) = ~2.5e-04
     # Ref:
     # * On the SDEs and Scaling Rules for Adaptive Gradient Algorithms
@@ -46,7 +46,7 @@ class TrainConfig:
     # Full SFT LR: 1e-4
     MAX_LEARNING_RATE = 1e-4 # 2e-5 linear or 1e-4 cosine
     SCHEDULER = 'cosine'
-    WEIGHT_DECAY = 0 # 0.1
+    WEIGHT_DECAY = 0
     KL_DIV_WEIGHT = 0
     DFT_WEIGHT = 1 # 0.8 Gave good EOF token prediction -> ||||
     QUANTIZATION = None
@@ -286,12 +286,12 @@ def source_dist(dataset):
 
 train_ds = load_dataset(
     "json",
-    data_files=f"data/datasets/Smollm2_base_train_{TrainConfig.CONTEXT_LEN}_nemotron_instruct_rawtemplate.jsonl",
+    data_files=f"data/datasets/Smollm2_base_train_{TrainConfig.CONTEXT_LEN}_nemotron_instruct_base.jsonl",
     split="train",
 )
 test_ds = load_dataset(
     "json",
-    data_files=f"data/datasets/Smollm2_base_test_{TrainConfig.CONTEXT_LEN}_nemotron_instruct_rawtemplate.jsonl",
+    data_files=f"data/datasets/Smollm2_base_test_{TrainConfig.CONTEXT_LEN}_nemotron_instruct_base.jsonl",
     split="train",
 )
 # dataset = dataset.sort('ctx_len')
@@ -302,7 +302,7 @@ dataset = Dataset(
     dataset=train_ds,
     shuffle=True,
     tokenizer=tokenizer,
-    # assistant_prefix="# assistant:\n\n", #"<|im_start|>assistant\n",
+    # assistant_prefix="# assistant:", #"<|im_start|>assistant\n",
     # assistant_end="||||", #"<|im_end|>",
     plw=0.0,
 )
@@ -313,7 +313,7 @@ eval_dataset = Dataset(
     dataset=test_ds,
     shuffle=False,
     tokenizer=tokenizer,
-    # assistant_prefix="# assistant:\n\n", #"<|im_start|>assistant\n",
+    # assistant_prefix="# assistant:", #"<|im_start|>assistant\n",
     # assistant_end="||||", #"<|im_end|>",
     plw=0.0,
 )
@@ -370,14 +370,14 @@ if TrainConfig.SCHEDULER == 'cosine':
         max_lr=TrainConfig.MAX_LEARNING_RATE,
         min_lr=TrainConfig.MIN_LEARNING_RATE,
         total_steps=int(len(dataset) * TrainConfig.EPOCHS) // TrainConfig.BATCH_SIZE,
-        warmup_steps=TrainConfig.WARMUP_STEPS,
+        warmup_steps=int(len(dataset) * TrainConfig.WARMUP_RATIO),
     )
 elif TrainConfig.SCHEDULER == 'linear':
     scheduler_adam = linear_decay_with_warmup(
         base_lr=TrainConfig.MAX_LEARNING_RATE,
         total_steps=int(len(dataset) * TrainConfig.EPOCHS) // TrainConfig.BATCH_SIZE,
-        warmup_steps=TrainConfig.WARMUP_STEPS,
-        decay_steps=TrainConfig.WARMUP_STEPS,
+        warmup_steps=int(len(dataset) * TrainConfig.WARMUP_RATIO),
+        decay_steps=int(len(dataset) * TrainConfig.WARMUP_RATIO),
     )
 else:
     raise NotImplementedError

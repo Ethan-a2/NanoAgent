@@ -698,6 +698,7 @@ def orca_agentinstruct():
     ds = load_dataset("mlabonne/orca-agentinstruct-1M-v1-cleaned")["train"]
     ds = ds.filter(
         lambda d: d["split"]
+        # in ['rag', 'text_extraction', 'text_classification', 'struct2text_flow']
         not in ["creative_content", "fermi", "open_domain_qa", "code_"]
     )
     ds = ds.map(
@@ -1035,8 +1036,8 @@ def prep_dataset(
             tulu3_persona(),
             # # TxT360_efforts_if('medium'),
             # # TxT360_efforts_if('low'),
-            shortcodes_python(),
-            code_feedback(),
+            # shortcodes_python(),
+            # code_feedback(),
             orca_agentinstruct(),
             smoltalk("systemchats-30k", tokenizer=tokenizer),
             smoltalk("everyday-conversations", tokenizer=tokenizer),
@@ -1063,20 +1064,20 @@ def prep_dataset(
     dataset_full = concatenate_datasets(data_list).shuffle(seed=seed)
     del data_list
 
-    # dataset_full = dataset_full.filter(
-    #     lambda d: all(
-    #         code_markdown_filter(turn["content"], remove_python=False)
-    #         for turn in d["messages"]
-    #     )
-    #     or (
-    #         d["source"]
-    #         in [
-    #             "HuggingFaceTB/smoltalk/apigen-80k",
-    #             "Locutusque/function-calling-chatml",
-    #         ]
-    #     )
-    # )
-    # print("After code filter:\n", dataset_full)
+    dataset_full = dataset_full.filter(
+        lambda d: all(
+            code_markdown_filter(turn["content"], remove_python=True)
+            for turn in d["messages"]
+        )
+        # or (
+        #     d["source"]
+        #     in [
+        #         "HuggingFaceTB/smoltalk/apigen-80k",
+        #         "Locutusque/function-calling-chatml",
+        #     ]
+        # )
+    )
+    print("After code filter:\n", dataset_full)
 
     # dataset_full = dataset_full.filter(
     #     lambda d: all(filter_non_english(turn["content"]) for turn in d["messages"])
@@ -1175,6 +1176,6 @@ if __name__ == "__main__":
     for stage, dataset in [("train", train_ds), ("test", test_ds)]:
         source_dist(dataset)
         print(f"Total {stage} dataset length:", len(dataset), flush=True)
-        save_path = f"data/datasets/Smollm2_base_{stage}_{CONTEXT_LEN}_nemotron_instruct_rawtemplate.jsonl"
+        save_path = f"data/datasets/Smollm2_base_{stage}_{CONTEXT_LEN}_nemotron_instruct_base.jsonl"
         print("Save path:", save_path, flush=True)
         dataset.to_json(save_path, orient="records")

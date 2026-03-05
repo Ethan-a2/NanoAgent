@@ -38,12 +38,12 @@ CHAT_TEMPLATE = {}
 
 CHAT_TEMPLATE['HuggingFaceTB'] = """{% for message in messages %}
 {% if loop.first and messages[0]['role'] != 'system' %}
-{{ '# SYSTEM:\n\nYou are a helpful AI assistant.||||' }}
+{{ '\n# system:\nYou are a helpful AI assistant.||||' }}
 {% endif %}
-{{'\n# ' + message['role']|upper + ':\n\n' + message['content'] + '||||'}}
+{{'\n# ' + message['role'] + ':\n' + message['content'] + '||||'}}
 {% endfor %}
 {% if add_generation_prompt %}
-{{ '# assistant:\n\n' }}
+{{ '\n# assistant:' }}
 {% endif %}"""
 
 
