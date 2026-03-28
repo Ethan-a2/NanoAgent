@@ -414,6 +414,8 @@ def prog_graph(
     # Remove [0, 1] default ticks on x-axis for bottom graph
     plt.tight_layout(pad=1)
     if save_path:
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
         plt.savefig(
             f"{save_path}/plot.jpg", dpi=400, bbox_inches="tight", transparent=True
         )

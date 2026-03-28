@@ -46,12 +46,12 @@ class TrainConfig:
     # Full SFT LR: 1e-4
     MAX_LEARNING_RATE = 1e-4 # 2e-5 linear or 1e-4 cosine
     SCHEDULER = 'cosine'
-    WEIGHT_DECAY = 0
+    WEIGHT_DECAY = 0.1
     KL_DIV_WEIGHT = 0
-    DFT_WEIGHT = 0.7
+    DFT_WEIGHT = 0
     QUANTIZATION = None
     GRADIENT_CHECKPOINT_LAYERS = None
-    SAVE_PATH = f"weights/{MODEL.split('/')[-1]}-nemotron-instruct-fc-base-dft"
+    SAVE_PATH = f"weights/{MODEL.split('/')[-1]}-nemotron-instruct-fc-base-sft"
 
 
 config_dict = {

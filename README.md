@@ -33,7 +33,7 @@ Run in Ollama: `ollama run quwsarohi/NanoAgent`
 
 ## 🧪 Training Overview
 
-- **Base model**: [`SmolLM2-135M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct)  
+- **Base model**: [`SmolLM2-135M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct) (instruction-tuned)
 - **Fine-tuning method**: ~~[Dynamic Fine-Tuning (DFT)](https://github.com/yongliang-wu/DFT/tree/master)~~ Supervised Fine-Tuning
 - **Platform**: Apple Mac M1 (16 GB) — MLX framework
 
@@ -42,21 +42,22 @@ Run in Ollama: `ollama run quwsarohi/NanoAgent`
 This model was trained using a combination of datasets under different open licenses.  
 Each dataset retains its original license, and use of those datasets is subject to their respective terms.
 
-| Dataset                                                                                  | Purpose                                                                 | License |
-|-------------------------------------------------------------------------------------------|--------------------------------------------------------------------------|----------------|
-| [microsoft/orca-agentinstruct-1M-v1](https://huggingface.co/datasets/microsoft/orca-agentinstruct-1M-v1)                                                      | RAG, MCQ answering, JSON parsing, Text classification, instruction following                     | Community Data License Agreement – Permissive, Version 2.0 |
-| [microsoft/orca-math-word-problems-200k](https://huggingface.co/datasets/microsoft/orca-math-word-problems-200k)                                                 | Lightweight reasoning, word-level reasoning | MIT                              |
-| [allenai/tulu-3-sft-personas-instruction-following](https://huggingface.co/datasets/allenai/tulu-3-sft-personas-instruction-following)                                     | Instruction following with persona                                      | Open Data Commons License Attribution family |
-| [xingyaoww/code-act](https://huggingface.co/datasets/xingyaoww/code-act)                                                                     | ReAct style reasoning and acting                                        | Apache-2.0 |
-| [m-a-p/Code-Feedback](https://huggingface.co/datasets/m-a-p/Code-Feedback)                                                                    | Feedback alignment                                                      | Apache-2.0 |
-| [HuggingFaceTB/smoltalk](https://huggingface.co/datasets/HuggingFaceTB/smoltalk)                                                                 | General conversation, system prompt handling                            | Apache-2.0 |
-| [HuggingFaceTB/smoltalk/apigen](https://huggingface.co/datasets/HuggingFaceTB/smoltalk)                                                          | Tool calling stabilization                                             | Creative Commons Attribution 4.0 (was sourced from [1](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k), [2](https://huggingface.co/datasets/argilla/apigen-function-calling)) |
-| [weijie210/gsm8k_decomposed](https://huggingface.co/datasets/weijie210/gsm8k_decomposed)                                                             | Question decomposition                                                 | - |
-| [Locutusque/function-calling-chatml](https://huggingface.co/datasets/Locutusque/function-calling-chatml)                                                     | Tool call response formatting                                          | Apache-2.0 |
-| [Salesforce/xlam-function-calling-60k](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k)  | Stronger function calling coverage                                     | Creative Commons Attribution 4.0 |
-| [HuggingFaceTB/smoltalk2/SFT/smolagents_toolcalling_traces_think](https://huggingface.co/datasets/HuggingFaceTB/smoltalk2/viewer/SFT/smolagents_toolcalling_traces_think)                         | Web search, scraping, real-time reasoning                               | Apache-2.0 |
-| [NousResearch/hermes-function-calling-v1](https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1)                                          | Tool calling support with thinking | Apache-2.0 |
-| [HuggingFaceTB/smoltalk/smol-magpie-ultra](https://huggingface.co/datasets/HuggingFaceTB/smoltalk/viewer/smol-magpie-ultra) | For python code writing | Apache-2.0 |
+#### General Training (SFT)
+| Dataset | Purpose | License |
+|---------|---------|---------|
+| [microsoft/orca-math-word-problems-200k](https://huggingface.co/datasets/microsoft/orca-math-word-problems-200k) | Math reasoning, word-level reasoning | MIT |
+| [allenai/tulu-3-sft-personas-instruction-following](https://huggingface.co/datasets/allenai/tulu-3-sft-personas-instruction-following) | Instruction following with personas | Open Data Commons License Attribution |
+| [mlabonne/orca-agentinstruct-1M-v1-cleaned](https://huggingface.co/datasets/mlabonne/orca-agentinstruct-1M-v1-cleaned) | RAG, MCQ, JSON parsing, text classification | Community Data License Agreement – Permissive, Version 2.0 |
+| [HuggingFaceTB/smoltalk](https://huggingface.co/datasets/HuggingFaceTB/smoltalk) (systemchats-30k) | General conversation, system prompts | Apache-2.0 |
+| [HuggingFaceTB/smoltalk](https://huggingface.co/datasets/HuggingFaceTB/smoltalk) (everyday-conversations) | Everyday conversation | Apache-2.0 |
+| [nvidia/Nemotron-Instruction-Following-Chat-v1](https://huggingface.co/datasets/nvidia/Nemotron-Instruction-Following-Chat-v1) | Instruction following, structured outputs | NVIDIA Open Model License |
+
+#### Function Calling Training
+| Dataset | Purpose | License |
+|---------|---------|---------|
+| [Locutusque/function-calling-chatml](https://huggingface.co/datasets/Locutusque/function-calling-chatml) | Tool call response formatting | Apache-2.0 |
+| [Salesforce/xlam-function-calling-60k](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k) | Function calling coverage | Creative Commons Attribution 4.0 |
+| [nemotron/interactive_agent](https://huggingface.co/datasets/nemotron/interactive_agent) (local) | Tool calling, agentic behavior | NVIDIA Open Model License |
 
 
 ## 🧭 Key Explorations & Findings
@@ -70,17 +71,29 @@ Each dataset retains its original license, and use of those datasets is subject 
 
 ## ⚡ Benchmark
 
-| Metric / Task                      | SmolLM2-135M-Instruct | NanoAgent                |
-|--------------------------------------|-------------------------|-----------------------------------|
-| 🧮 **Parameters**                   | 135M                    | 135M                              |
-| 📏 **Context Length**               | 8k                      | 8k                                |
-| 📊 **IFEval Score (Overall)**       | ---                    | ---                          |
-| 🧰 **Tool Call Tasks**             | ❌ Not Supported        | ✅ Supported                      |
-| 🧭 **Instruction Following**       | 🟡 Moderate             | 🟢 Improved                       |
-| 🧠 **Reasoning (Light)**          | 🟡 Moderate             | 🟡 Moderate                       |
-| 📝 **Training Method**            | Baseline (SFT)          | SFT + Agentic Finetuning         |
-| 🧪 **Strength**                   | Instruction following   | Tool call ability + structured outputs |
-| ⚠️ **Limitations**               | No tool calling         | Occasional tool errors, still beta |
+### Model Comparison
+
+| Benchmark | SmolLM2-135M-Instruct | NanoAgent-v0.1 | NanoAgent-v0.2 |
+|-----------|:---------------------:|:--------------:|:--------------:|
+| **Commonsense QA** (acc) | 20.88% | 20.72% | 20.23% |
+| **IFEval** (prompt strict) | 21.63% | 24.58% | **29.94%** |
+| **IFEval** (inst strict) | 35.01% | 37.89% | **42.33%** |
+| **IFEval** (prompt loose) | 23.84% | 26.80% | **32.16%** |
+| **IFEval** (inst loose) | 37.65% | 40.05% | **45.32%** |
+| **tinyArc** (acc_norm) | 33.76% | **38.25%** | 36.47% |
+| **tinyGSM8k** (exact_match) | 0.55% | **5.95%** | 2.31% |
+| **tinyHellaswag** (acc_norm) | 42.20% | 40.41% | **43.45%** |
+| **tinyMMLU** (acc_norm) | 26.79% | 25.30% | **27.62%** |
+| **tinyTruthfulQA** (acc) | 38.65% | 38.90% | **40.45%** |
+| **tinyWinogrande** (acc_norm) | 46.48% | **48.56%** | 42.86% |
+
+### Key Findings
+
+- **NanoAgent-v0.2** achieves the best **instruction following** (IFEval) across all metrics (+5-8% improvement over v0.1)
+- **NanoAgent-v0.1** leads on reasoning tasks: **tinyArc**, **tinyGSM8k**, and **tinyWinogrande**
+- **NanoAgent-v0.2** improves on **tinyMMLU**, **tinyTruthfulQA**, and **tinyHellaswag** over both predecessors
+- All NanoAgent versions significantly outperform the base SmolLM2-135M-Instruct on **IFEval** (instruction following)
+- 🧰 **Tool Calling**: Only NanoAgent (v0.1 & v0.2) support tool calling — SmolLM2-135M-Instruct does not
 
 
 ## 🧭 Roadmap
