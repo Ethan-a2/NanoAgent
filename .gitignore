@@ -182,3 +182,5 @@ cython_debug/
 .DS_Store
 weights/
 data/datasets/
+benchmarks/results
+lm-evaluation-harness/

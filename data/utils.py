@@ -3,19 +3,20 @@ import json
 import random
 import re
 import textwrap
+from ast import literal_eval
 
 # Prompts to generate reasoning chain
 THINK_STRINGS = [
-    "You must think step-by-step inside <think></think> tags before answering.",
-    "Start by reasoning through the problem inside the <think></think> tags, then answer.",
-    "Put your full reasoning in <think></think> tags before arriving at an answer.",
-    "Always explain your logic step-by-step inside <think></think> tags before responding.",
-    "Your answer must follow a step-by-step reasoning written inside <think></think> tags.",
-    "Provide your thought process inside <think></think> tags before writing the final answer.",
-    "Use the <think></think> tags to write your reasoning step-by-step before answering.",
-    "Think through the problem inside <think></think> tags before you respond.",
+    "You must think step-by-step inside <think> </think> tags before answering.",
+    "Start by reasoning through the problem inside the <think> </think> tags, then answer.",
+    "Put your full reasoning in <think> </think> tags before arriving at an answer.",
+    "Always explain your logic step-by-step inside <think> </think> tags before responding.",
+    "Your answer must follow a step-by-step reasoning written inside <think> </think> tags.",
+    "Provide your thought process inside <think> </think> tags before writing the final answer.",
+    "Use the <think> </think> tags to write your reasoning step-by-step before answering.",
+    "Think through the problem inside <think> </think> tags before you respond.",
     "Make sure to include your step-by-step thinking inside the 'think' tags prior to answering.",
-    "Please reason step-by-step within the <think></think> tags before giving your answer.",
+    "Please reason step-by-step within the <think> </think> tags before giving your answer.",
     "Think inside 'think' XML tags and then provide final answer",
     "Think step-by-step inside 'think' tags.",
     "Think inside 'think' tags before generating final answer.",
@@ -204,152 +205,261 @@ def short_code(inp_str):
     return True
 
 
-TYPE_MAPPING = {
-    "string": "str",
-    "integer": "int",
-    "number": "float",
-    "boolean": "bool",
-    "array": "List",
-    "object": "Dict",
-}
+def dedent_markdown_python_code(markdown_text):
+    def dedent_code_block(match):
+        code = match.group(1)
+        dedented = textwrap.dedent(code.strip('\n'))
+        return f"```python\n{dedented.strip()}\n```"
+
+    # Substitute each code block with a dedented version
+    cleaned_markdown = re.sub(r' *```python(.*?)```', dedent_code_block, markdown_text, flags=re.DOTALL)
+    return cleaned_markdown
 
 
-def resolve_type(schema, required_keys=None, level=0):
+def filter_by_resp_len(ds, resp_lim:int, messages_key='messages'):
+    def map_fn(data):
+        new_messages = []
+        cache_messages = []
+        for turn in data["_"+messages_key]:
+            if turn['role'] == 'assistant':
+                if len(turn['content']) > resp_lim:
+                    break
+                new_messages.extend(cache_messages + [turn])
+                cache_messages = []
+            else:
+                cache_messages.append(turn)
+        return new_messages
+    
+    
+    ds = ds.rename_column(messages_key, "_"+messages_key)
+    ds = ds.map(lambda d: {'messages': map_fn(d), **d})
+    ds = ds.filter(lambda d: len(d['messages']) > 0)
+    ds = ds.remove_columns(['_'+messages_key])
+    
+    return ds
+
+
+def filter_non_english(text: str) -> bool:
     """
-    Recursively resolve the type from a schema object.
+    Detects if the given text contains characters that are not basic English.
+    English includes A-Z, a-z, 0-9, and basic punctuation.
     """
-    if required_keys is None:
-        required_keys = set()
-
-    typ = schema.get("type", "string")
-
-    if typ == "array":
-        items = schema.get("items", {})
-        inner_type = resolve_type(items, required_keys, level + 1)
-        return f"List[{inner_type}]"
-
-    elif typ == "object":
-        props = schema.get("properties", {})
-        reqs = set(schema.get("required", []))
-        lines = []
-        for key, prop in props.items():
-            resolved = resolve_type(prop, reqs, level + 1)
-            if key not in reqs:
-                resolved = f"Optional[{resolved}]"
-            lines.append(f'"{key}": {resolved}')
-        indent = "    " * (level + 2)
-        inner = (",\n" + indent).join(lines)
-        return f"Dict[str, {resolve_type_object(props, reqs, level)}]"
-
-    if isinstance(typ, list):
-        return TYPE_MAPPING.get(typ[0], "Any")
-    return TYPE_MAPPING.get(typ, "Any")
+    # Match anything that is not basic English letters, numbers or punctuation
+    return not bool(re.search(r"[^\x00-\x7F]", text))
 
 
-def resolve_type_object(props, required_keys, level=0):
-    lines = []
-    for key, prop in props.items():
-        resolved = resolve_type(prop, required_keys, level)
-        if key not in required_keys:
-            resolved = f"Optional[{resolved}]"
-        lines.append(f'"{key}": {resolved}')
-    return (
-        "Any"  # Use Dict[str, Any] instead of full schema in annotations for simplicity
-    )
+def pack_data(
+    dataset, ctx_len=1024, return_list=False, segment_size=256, sort=False, report=True
+):
+    from datasets import Dataset
+    new_dataset = []
+    tot_buckets = (ctx_len // segment_size) + 2
+    ctx_bucket = [set() for _ in range(tot_buckets)]
+    assert segment_size > 1
 
+    if sort:
+        dataset = dataset.sort("ctx_len")
 
-def get_annotation(name, schema, required_keys):
-    base_type = resolve_type(schema, required_keys)
-    if name not in required_keys:
-        return f"Optional[{base_type}]"
-    return base_type
+    for idx, data in enumerate(dataset):
+        prev_loc_found = False
+        # Iterate over bucket size
+        # Bucket 0 -> [0, segment_size)
+        # Bucket 1 -> [segment_size, 2*segment_size)
+        for bidx in range(tot_buckets):
+            # Bucket index indicates remaining ctx_len
+            min_rem_ctx_len = (bidx + 1) * segment_size
+            # If remaining_len is greater than the content ctx len and a content exists
+            # Truncation happens due to data["ctx_len"] // 2
+            if min_rem_ctx_len >= (data["ctx_len"] // 2) and ctx_bucket[bidx]:
+                # Add the content in the existing data
+                data_idx = next(iter(ctx_bucket[bidx]))
+                new_dataset[data_idx]["messages"].append(data["messages"])
+                new_dataset[data_idx]["source"].append(data["source"])
+                new_dataset[data_idx]["ctx_len"] += data["ctx_len"]
+                ctx_bucket[bidx].remove(data_idx)
+                prev_loc_found = True
+                # New remaining ctx_len
+                new_rem_ctx_len = max(ctx_len - new_dataset[data_idx]["ctx_len"], 0)
+                if new_rem_ctx_len < 16: break
+                new_bidx = (new_rem_ctx_len // segment_size) + 1
+                ctx_bucket[new_bidx].add(data_idx)
+                break
 
-
-def get_description(name, schema, required_keys):
-    desc = schema.get("description", "").strip()
-    typ = resolve_type(schema, required_keys)
-    if name not in required_keys:
-        return f"    {name} ({typ}, optional): {desc}"
-    else:
-        return f"    {name} ({typ}): {desc}"
-
-
-def json_tool_to_function(tool_defs: dict) -> str:
-    if isinstance(tool_defs, str):
-        tool_defs = json.loads(tool_defs)
-    if not isinstance(tool_defs, list):
-        tool_defs = [tool_defs]
-    returns = []
-    for tool_def in tool_defs:
-        name = tool_def.get("name")
-        description = tool_def.get("description", "")
-        parameters = tool_def.get("parameters", {})
-        props = parameters.get("properties", {})
-        required = set(parameters.get("required", []))
-        func_args = []
-        doc_args = []
-        for param_name, param_def in props.items():
-            ann = get_annotation(param_name, param_def, required)
-            func_args.append(f"{param_name}: {ann}")
-            doc_args.append(get_description(param_name, param_def, required))
-
-        func_signature = f"def {name}({', '.join(func_args)}):"
-        indent = random.choice(["  ", "    "])
-        arg_title = random.choice([f"{indent}Args:\n", f"{indent}Arguments:\n", ""])
-        docstring = (
-            f'    """\n{indent}{description}\n\n{arg_title}'
-            + "\n".join(doc_args)
-            + '\n    """'
-        )
-        returns.append(f"{func_signature}\n{docstring}\n")
-
-    return returns
-
-
-def format_value(value):
-    """Format Python values for code representation."""
-    if isinstance(value, str):
-        return f'"{value}"'
-    elif isinstance(value, bool):
-        return "True" if value else "False"
-    elif value is None:
-        return "None"
-    elif isinstance(value, (int, float)):
-        return str(value)
-    elif isinstance(value, list):
-        return "[" + ", ".join(format_value(v) for v in value) + "]"
-    elif isinstance(value, dict):
-        return (
-            "{"
-            + ", ".join(
-                f"{format_value(k)}: {format_value(v)}" for k, v in value.items()
+        if not prev_loc_found:
+            new_dataset.append(
+                {
+                    "messages": [data["messages"]],
+                    "source": [data["source"]],
+                    "ctx_len": data["ctx_len"],
+                }
             )
-            + "}"
-        )
-    else:
-        raise ValueError(f"Unsupported argument type: {type(value)}")
+            rem_ctx_idx = (max(ctx_len - new_dataset[-1]["ctx_len"], 0) // segment_size) + 1
+            ctx_bucket[rem_ctx_idx].add(len(new_dataset) - 1)
+
+    if report:
+        # new_dataset = pack_data(new_dataset, ctx_len, sort=True, report=False)
+        NON_PAD_TOKS = 0
+        TRUNCATED_TOKS = 0
+        PAD_TOKS = 0
+        TOT_TOKS = 0
+
+        for idx, data in enumerate(new_dataset):
+            TRUNCATED_TOKS += max(data["ctx_len"] - ctx_len, 0)
+            NON_PAD_TOKS += data["ctx_len"]
+            PAD_TOKS += max(ctx_len - data['ctx_len'], 0)
+            TOT_TOKS += data['ctx_len']
+
+        print("Total tokens:          : ", TOT_TOKS)
+        print("Total non-pad tokens   : ", NON_PAD_TOKS)
+        print("Total pad tokens       : ", PAD_TOKS, f"({(PAD_TOKS / TOT_TOKS) * 100:2.2f}% of total tokens)")
+        print(f"Total truncated tokens :  {TRUNCATED_TOKS} ({TRUNCATED_TOKS / TOT_TOKS * 100:2.2f}% of total tokens)")
+
+    if return_list:
+        return new_dataset
+    return Dataset.from_list(new_dataset)
 
 
-def tool_call_to_python_call(tool_calls: dict) -> str:
-    """Convert a JSON tool-call into a Python-style function call string."""
-    if isinstance(tool_calls, str):
-        tool_calls = json.loads(tool_calls)
-    if isinstance(tool_calls, dict):
-        tool_calls = [tool_calls]
-    returns = []
+# def json_toolcall_to_python(tool_calls: dict, markdown_format=True) -> str:
+#     """Convert a JSON tool-call into a Python-style function call string."""
 
-    for tool_call in tool_calls:
-        func_name = tool_call.get("name")
-        arguments = tool_call.get("arguments", {})
+#     def format_value(value):
+#         """Format Python values for code representation."""
+#         if isinstance(value, str):
+#             return f'"{value}"'
+#         elif isinstance(value, bool):
+#             return "True" if value else "False"
+#         elif value is None:
+#             return "None"
+#         elif isinstance(value, (int, float)):
+#             return str(value)
+#         elif isinstance(value, list):
+#             return "[" + ", ".join(format_value(v) for v in value) + "]"
+#         elif isinstance(value, dict):
+#             return (
+#                 "{"
+#                 + ", ".join(
+#                     f"{format_value(k)}: {format_value(v)}" for k, v in value.items()
+#                 )
+#                 + "}"
+#             )
+#         else:
+#             raise ValueError(f"Unsupported argument type: {type(value)}")
 
-        if not func_name:
-            raise ValueError("Missing function name in tool call.")
+#     if isinstance(tool_calls, str):
+#         tool_calls = json.loads(tool_calls)
+#     if isinstance(tool_calls, dict):
+#         tool_calls = [tool_calls]
+#     returns = []
 
-        args_str = ", ".join(
-            f"{key}={format_value(val)}" for key, val in arguments.items()
-        )
-        returns.append(f"{func_name}({args_str})")
-    return returns
+#     for tool_call in tool_calls:
+#         func_name = tool_call.get("name")
+#         arguments = tool_call.get("arguments", {})
+
+#         if not func_name:
+#             raise ValueError("Missing function name in tool call.")
+
+#         args_str = ", ".join(
+#             f"{key}={format_value(val)}" for key, val in arguments.items()
+#         )
+#         returns.append(f"{func_name}({args_str})")
+#     if markdown_format:
+#         return f"```python\n{'\n'.join(returns)}\n```"
+#     return returns
+
+
+# def json_tooldef_to_python(tools: list, indent=None) -> str:
+#     """
+#     Convert JSON tool descriptions into Python function definitions (as a string).
+
+#     - Maps JSON schema types to Python types
+#     - Handles required vs optional parameters
+#     - Converts enums to Literal types
+#     - Adds docstrings from descriptions
+#     """
+
+#     def map_type(prop: dict) -> str:
+#         """Map JSON schema types to Python type hints."""
+#         t = prop.get("type", "any")
+#         if not isinstance(t, str):
+#             t = 'any'
+
+#         # Handle enum -> Literal
+#         if "enum" in prop or "enums" in prop:
+#             values = prop.get("enum") or prop.get("enums")
+#             literals = ", ".join(repr(v) for v in values)
+#             return f"Literal[{literals}]"
+
+#         return {
+#             "string": "str",
+#             "str": "str",
+#             "integer": "int",
+#             "int": "int",
+#             "number": "float",
+#             "float": "float",
+#             "boolean": "bool",
+#             "array": "List[Any]",
+#             "list": "List[Any]",
+#             "object": "object",
+#             "any": "Any",
+#             "null": "None",
+#         }.get(t, "Any")
+
+#     lines = []
+#     if indent is None:
+#         indent = random.randint(0, 6)
+
+#     if isinstance(tools, str):
+#         try:
+#             tools = tool_parse(tools)
+#         except Exception as E:
+#             print(tools)
+#             raise E
+
+#     for tool in tools:
+#         if isinstance(tool, str):
+#             try:
+#                 tool = tool_parse(tools)
+#             except Exception as E:
+#                 print(tool)
+#                 raise E
+#         # print(tool)
+#         name = tool["name"]
+#         desc = tool.get("description", "")
+#         params = tool.get("parameters", {})
+#         props = params.get("properties", {})
+#         required = set(params.get("required", []))
+
+#         args_list = []
+#         doc_params = []
+
+#         for p_name, p_info in props.items():
+#             # print(p_name, '->', p_info)
+#             py_type = map_type(p_info)
+#             # Required vs optional
+#             if p_name in required:
+#                 arg = f"{p_name}: {py_type}"
+#             else:
+#                 arg = f"{p_name}: Optional[{py_type}] = None"
+#             args_list.append(arg)
+
+#             # Parameter doc
+#             p_desc = p_info.get("description")
+#             if p_desc:
+#                 doc_params.append(f"{' '*indent}{p_name}: {p_desc}")
+
+#         args_str = ", ".join(args_list)
+        
+#         # Build function string
+#         func_def = f"def {name}({args_str}):\n"
+#         func_def += f'{" "*indent}"""{desc}\n\n'
+#         if doc_params:
+#             func_def += f"{' '*indent}Args:\n" + "\n".join(doc_params) + "\n"
+#         func_def += f'{" "*indent}"""\n'
+#         func_def += f"{' '*(indent)}pass\n"
+
+#         lines.append(func_def)
+
+#     return "\n\n".join(lines)
 
 
 if __name__ == "__main__":
@@ -399,114 +509,6 @@ if __name__ == "__main__":
         ]
     )
     python_call = 'web_search(search_str="Dr Yunus",)'  # paginate=False, result=5, kwargs={\"search_engine\": \"google\"}, grab=[1, 3, \"None\"])"
-    print(tool_call_to_python_call(json_call))
-    elems = json_tool_to_function(tools)
-    for elem in elems:
-        print(elem)
-
-
-def dedent_markdown_python_code(markdown_text):
-    def dedent_code_block(match):
-        code = match.group(1)
-        dedented = textwrap.dedent(code.strip('\n'))
-        return f"```python\n{dedented.strip()}\n```"
-
-    # Substitute each code block with a dedented version
-    cleaned_markdown = re.sub(r' *```python(.*?)```', dedent_code_block, markdown_text, flags=re.DOTALL)
-    return cleaned_markdown
-
-def filter_by_resp_len(ds, resp_lim:int):
-    def filter_fn(data):
-        for turn in data['messages']:
-            if turn['role'] == 'assistant':
-                if len(turn['content']) > resp_lim:
-                    return False
-                return True
-    ds = ds.filter(filter_fn)
-    return ds
-
-
-def filter_non_english(text: str) -> bool:
-    """
-    Detects if the given text contains characters that are not basic English.
-    English includes A-Z, a-z, 0-9, and basic punctuation.
-    """
-    # Match anything that is not basic English letters, numbers or punctuation
-    return not bool(re.search(r"[^\x00-\x7F]", text))
-
-
-def pack_data(
-    dataset, ctx_len=1024, return_list=False, bucket_size=256, sort=False, report=True
-):
-    from datasets import Dataset
-    new_dataset = []
-    ctx_bucket = [set() for _ in range(bucket_size)]
-    prev_data_len = len(dataset)
-    assert bucket_size > 1
-
-    if sort:
-        dataset = dataset.sort("ctx_len")
-
-    for idx, data in enumerate(dataset):
-        prev_loc_found = False
-        for bidx in range(bucket_size):
-            min_rem_ctx_len = bidx * bucket_size
-            # max_rem_ctx_len = (bidx + 1) * bucket_size
-            if min_rem_ctx_len > data["ctx_len"] and ctx_bucket[bidx]:
-                # data_idx = -1
-                # for e in ctx_bucket[bidx]:
-                #     if new_dataset[e]['ctx_len'] + data['ctx_len'] <= ctx_len:
-                #         data_idx = e
-                #         break
-                # if data_idx == -1:
-                #     continue
-
-                data_idx = next(iter(ctx_bucket[bidx]))
-                new_dataset[data_idx]["messages"].append(data["messages"])
-                new_dataset[data_idx]["source"].append(data["source"])
-                new_dataset[data_idx]["ctx_len"] += data["ctx_len"]
-
-                new_ctx_len = max(
-                    ctx_len - (data["ctx_len"] + new_dataset[data_idx]["ctx_len"]), 0
-                )
-                new_bidx = new_ctx_len % bucket_size
-                ctx_bucket[bidx].remove(data_idx)
-                ctx_bucket[new_bidx].add(data_idx)
-                prev_loc_found = True
-                break
-
-        if not prev_loc_found:
-            new_dataset.append(
-                {
-                    "messages": [data["messages"]],
-                    "source": [data["source"]],
-                    "ctx_len": data["ctx_len"],
-                }
-            )
-            rem_ctx = max(ctx_len - new_dataset[-1]["ctx_len"], 0) % bucket_size
-            ctx_bucket[rem_ctx].add(len(new_dataset) - 1)
-
-    if report:
-        # new_dataset = pack_data(new_dataset, ctx_len, sort=True, report=False)
-        NON_PAD_TOKS = 0
-        TRUNCATED_TOKS = 0
-        for idx, data in enumerate(new_dataset):
-            # assert data['ctx_len'] <= ctx_len, f"Data idx: {idx} = {data['ctx_len']} > {ctx_len}"
-            if data["ctx_len"] > ctx_len:
-                TRUNCATED_TOKS += data["ctx_len"] - ctx_len
-            NON_PAD_TOKS += data["ctx_len"]
-        TOT_TOKS = len(new_dataset) * ctx_len
-        PAD_TOKS = TOT_TOKS - NON_PAD_TOKS
-        print("Total tokens:        ", TOT_TOKS)
-        print(
-            "Total non-pad tokens:",
-            NON_PAD_TOKS,
-            f"({(PAD_TOKS / TOT_TOKS) * 100:2.2f}% padding)",
-        )
-        print(
-            f"Total truncated tokens: {TRUNCATED_TOKS} ({TRUNCATED_TOKS / TOT_TOKS * 100:2.2f}%)"
-        )
-
-    if return_list:
-        return new_dataset
-    return Dataset.from_list(new_dataset)
+    print(json_toolcall_to_python(tools))
+    print(json_tooldef_to_python(json_call))
+    
