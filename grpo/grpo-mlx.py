@@ -60,7 +60,7 @@ class TrainConfig:
     """Training configuration for GRPO."""
     # Iterations
     ITERS: int = 5_000
-    GENERATE_DATA: bool = False
+    GENERATE_DATA: bool = True
     BATCH_SIZE: int = 1
     GEN_LEN: int = 384
     SAVE_FREQ: int = 50
@@ -378,7 +378,8 @@ def prog_graph(
 
     # Rewards
     all_rewards = np.asarray(all_rewards)
-    std_rewards = np.asarray(std_rewards)
+    # std_rewards = np.asarray(std_rewards)
+    std_rewards = np.std(all_rewards)
     axes[1].plot(np.cumsum(all_rewards) / (np.arange(len(all_rewards)) + 1), color="tab:blue", alpha=0.8, linestyle=':', label='Cumulative Sum')
     axes[1].plot(mean_map(all_rewards), color="tab:blue", alpha=0.8, linestyle='--', label='Mean Win. 20')
     # axes[1].plot(gaussian_filter1d(all_rewards, sigma=2.5), linewidth=2, color="tab:blue", label='Smoothen')
@@ -931,7 +932,9 @@ def grpo_train_loop(
         print(train_set[batch_index%len(train_set)]['prompt'])
         prompt_len = len(tokenizer.encode(train_set[batch_index%len(train_set)]['prompt']))
         for re, rt in zip(rollout_rewards, rollout_tokens):
-            response_decoded = tokenizer.decode(rt[prompt_len:].tolist()).removesuffix('<|endoftext|>')
+            response_decoded = tokenizer.decode(rt[prompt_len:].tolist())
+            while response_decoded.endswith('<|endoftext|>'):
+                response_decoded = response_decoded.removesuffix('<|endoftext|>')
             print(f"{re:.2f}: --> {response_decoded}")
             print("---")
         print()

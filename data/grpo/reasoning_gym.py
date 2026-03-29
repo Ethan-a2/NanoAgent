@@ -174,11 +174,15 @@ def needle_haystack(tokenizer, size=500, prompt_token_len=None, think=False):
 
     dataset_list = []
     for data in dataset:
+        question = data['question']
+        if random.choice([True, False]):
+            question = question.strip().removesuffix('Reply only with a name.').strip()
+            question += " Think step by step then reply with a name."
+
         messages = (
-            (generate_think_kshot()
-            if think
-            else []) + [{"role": "user", "content": data["question"]}]
+            [{"role": "user", "content": question}]
         )
+
         dataset_list.append(
             {
                 "prompt": tokenizer.apply_chat_template(
@@ -249,11 +253,12 @@ def syllogism(tokenizer, size=500, prompt_token_len=None, think=False):
 
     dataset_list = []
     for data in dataset:
-        messages = (
-            (generate_think_kshot()
-            if think
-            else []) + [{"role": "user", "content": data["question"]}]
-        )
+        question = data["question"]
+        if random.choice([True, False]):
+            question = question.strip().removesuffix('(Answer Yes or No)').strip()
+            question += "\nThink step by step then answer Yes or No"
+        messages = [{"role": "user", "content": question}]
+        
         dataset_list.append(
             {
                 "prompt": tokenizer.apply_chat_template(
@@ -693,11 +698,11 @@ def zebra_puzzles(tokenizer, size=500, prompt_token_len=None, think=False):
 
     dataset_list = []
     for data in dataset:
-        messages = (
-            (generate_think_kshot()
-            if think
-            else []) + [{"role": "user", "content": data["question"]}]
-        )
+        question = data['question']
+        if random.choice([True, False]):
+            question = question.strip().removesuffix("Provide only the name of the person as your final answer.").strip()
+            question += " Think step by step then provide only the name of the person as your final answer."
+        messages = [{"role": "user", "content": question}]
         dataset_list.append(
             {
                 "prompt": tokenizer.apply_chat_template(
