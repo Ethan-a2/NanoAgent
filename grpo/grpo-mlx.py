@@ -60,7 +60,7 @@ class TrainConfig:
     """Training configuration for GRPO."""
     # Iterations
     ITERS: int = 5_000
-    GENERATE_DATA: bool = False
+    GENERATE_DATA: bool = True
     BATCH_SIZE: int = 1
     GEN_LEN: int = 384
     SAVE_FREQ: int = 50
@@ -87,7 +87,7 @@ class TrainConfig:
     QUANTIZATION: int | None = None
     GRADIENT_CHECKPOINT_LAYERS: int | None = 6
     DYNAMIC_PADDING: bool = True
-    EVAL_SAMPLES: int = 100
+    EVAL_SAMPLES: int = 200
     TQDM: bool = True
     STD_NORM: bool = False
     SAMPLING: str = 'token'
@@ -96,7 +96,7 @@ class TrainConfig:
     MIN_P: float | None = None
     TOP_K: int | None = None
     TOP_P: float = 0.9
-    REPETITION_PENALTY: float = 1.1
+    REPETITION_PENALTY: float = 1.05
 
 # GSPO Constraints:
 # -----------------
@@ -287,16 +287,16 @@ if TrainConfig.GENERATE_DATA:
     # --- Math Mix ---
     sz = int(ds_size * 0.25)
     train_ds += alice_in_wonderland(tokenizer=tokenizer, size=sz, think=False)
-    sz = int(ds_size * 0.1)
-    train_ds += syllogism(tokenizer, size=sz, think=False)
+    # sz = int(ds_size * 0.1)
+    # train_ds += syllogism(tokenizer, size=sz, think=False)
     sz = int(ds_size * 0.3)
     train_ds += gsm_symbolic(tokenizer, size=sz, think=False)
-    sz = int(ds_size * 0.15)
-    train_ds += chain_sum(tokenizer, size=sz, think=False)
-    sz = int(ds_size * 0.1)
+    # sz = int(ds_size * 0.15)
+    # train_ds += chain_sum(tokenizer, size=sz, think=False)
+    sz = int(ds_size * 0.05) # 0.1
     train_ds += zebra_puzzles(tokenizer, size=sz, think=False)
-    sz = int(ds_size * 0.1)
-    train_ds += needle_haystack(tokenizer, size=sz*3, prompt_token_len=TrainConfig.MAX_INPUT_LEN, think=False)[:sz]
+    # sz = int(ds_size * 0.1)
+    # train_ds += needle_haystack(tokenizer, size=sz*3, prompt_token_len=TrainConfig.MAX_INPUT_LEN, think=False)[:sz]
     
     random.shuffle(train_ds)
     print("New Generated Dataset length:", len(train_ds))
@@ -395,6 +395,7 @@ def prog_graph(
     axes[1].set_title("Rewards")
     axes[1].legend()
     axes[1].grid(True)
+    axes[1].set_ylim(top=1.0)
     axes[1].set_ylim(bottom=0)
 
     itrs = [x['iter'] for x in eval_rewards]
@@ -570,7 +571,7 @@ def interpolate_models(past_model: nn.Module, present_model: nn.Module, weight: 
     return tree_unflatten(new_weights)
 
 
-def soft_gate(x, advantages, t_pos=1, t_neg=1.07):
+def soft_gate(x, advantages, t_pos=1, t_neg=1.05):
     """SAPO soft clipping function. Applies different temperature based on advantage sign."""
     # SAPO default: t_pos=1, t_neg=1.05
     temp = mx.where(advantages > 0, t_pos, t_neg)
@@ -698,15 +699,20 @@ def rollout_batch(prompt, scorer, tokenizer, model, group_size, dynamic_sampling
     else:
         logits_processors = None
     
+    gen_cache = set()
+    
     # === FIRST PASS: Collect raw rollouts without padding ===
     # raw_tokens: prompt + response (unpadded, variable length)
     # raw_masks: 2 for prompt tokens, 1 for response tokens, 0 for padding
     # raw_logprobs: 0 for prompt, actual logprobs for response tokens
     raw_tokens, raw_masks, raw_logprobs, rollout_rewards = [], [], [], []
-    max_sample_step = group_size
-    if dynamic_sampling:
-        max_sample_step *= 3
+    max_sample_step = group_size * 2
+    # if dynamic_sampling:
+        # max_sample_step *= 3
     
+    # print("--- PROMPT ---")
+    # print(prompt)
+
     for gitr in range(max_sample_step):
         response_text = ""
         response_tokens = []
@@ -724,11 +730,20 @@ def rollout_batch(prompt, scorer, tokenizer, model, group_size, dynamic_sampling
             response_tokens.append(resp.token)
             response_logprob.append(resp.logprobs)
         
+        if response_text in gen_cache:
+            continue
+        gen_cache.add(response_text)
+
+
+        # print(f"--- RESPONSE ({len(gen_cache)}) ---")
+        # print(response_text)
+        
         # Reward: -1 if didn't stop properly, otherwise use scorer
         if resp.finish_reason != 'stop' or response_tokens[-1] != tokenizer.eos_token_id:
             reward = -1.0
         else:
             reward = float(scorer(response_text, False))
+        # print("Reward:", reward)
         
         if dynamic_sampling and not (0 <= reward < 1):
             continue
@@ -921,7 +936,7 @@ def grpo_train_loop(
             group_size=group_size
         )
 
-        if len(rollout_rewards) < group_size // 2:
+        if len(rollout_rewards) < 2: # group_size // 2:
             print(f"Not enough samples to train: {[round(x, 2) for x in rollout_rewards]}. Skipping...", flush=True)
             continue
         if min(rollout_rewards) == max(rollout_rewards):
