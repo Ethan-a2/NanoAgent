@@ -2,7 +2,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # 模型路径（本地或 HuggingFace）
-MODEL_PATH = "quwsarohi/NanoAgent-135M"
+# MODEL_PATH = "quwsarohi/NanoAgent-135M"
+MODEL_PATH = "HuggingFaceTB/SmolLM2-135M-Instruct"
+
 
 # 加载模型和分词器
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
