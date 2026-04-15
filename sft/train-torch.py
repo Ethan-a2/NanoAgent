@@ -1,11 +1,7 @@
 import json
 import os
 
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
 import random
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,15 +9,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset as TorchDataset
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from datasets import load_dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     get_linear_schedule_with_warmup,
 )
-from tqdm import tqdm
-from utils.tokenizer import get_tokenizer
 
 
 @dataclass
@@ -29,7 +21,7 @@ class TrainConfig:
     MODEL = "HuggingFaceTB/SmolLM2-135M"
     EPOCHS = 1
     BATCH_SIZE = 1
-    CONTEXT_LEN = 2048
+    CONTEXT_LEN = 256
     LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 0.1
     WARMUP_RATIO = 0.05
@@ -37,6 +29,42 @@ class TrainConfig:
     MAX_GRAD_NORM = 1.0
     SAVE_PATH = "weights/SmolLM2-135M-torch-sft"
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+class SFTDataset(TorchDataset):
+    def __init__(self, dataset, tokenizer, config):
+        self.dataset = dataset
+        self.tokenizer = tokenizer
+        self.config = config
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        item = self.dataset[idx]
+        messages = item["messages"]
+
+        text = ""
+        for msg in messages:
+            if msg["role"] == "system":
+                continue
+            elif msg["role"] == "user":
+                text += "User: " + msg["content"] + "\n"
+            elif msg["role"] == "assistant":
+                text += "Assistant: " + msg["content"] + "\n"
+
+        enc = self.tokenizer(
+            text,
+            max_length=self.config.CONTEXT_LEN,
+            truncation=True,
+            padding="max_length",
+            return_tensors="pt",
+        )
+
+        input_ids = enc["input_ids"].squeeze(0)
+        labels = input_ids.clone()
+
+        return {"input_ids": input_ids, "labels": labels}
 
 
 def main():
@@ -54,7 +82,48 @@ def main():
 
     print(f"Using device: {config.DEVICE}")
 
+    example_data = [
+        {
+            "messages": [
+                {"role": "user", "content": "What is 2+2?"},
+                {"role": "assistant", "content": "2+2 equals 4."},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "Hello!"},
+                {"role": "assistant", "content": "Hello! How can I help you?"},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "What is machine learning?"},
+                {"role": "assistant", "content": "ML is a type of AI."},
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "Tell me a joke"},
+                {
+                    "role": "assistant",
+                    "content": "Why did the computer go to the doctor? Because it had a virus!",
+                },
+            ]
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "What is Python?"},
+                {
+                    "role": "assistant",
+                    "content": "Python is a high-level programming language.",
+                },
+            ]
+        },
+    ]
+
+    print(f"Loading model: {config.MODEL}")
     tokenizer = AutoTokenizer.from_pretrained(config.MODEL)
+    tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         config.MODEL,
         torch_dtype=torch.bfloat16 if config.DEVICE == "cuda" else torch.float32,
@@ -64,62 +133,20 @@ def main():
         f"Model loaded: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M parameters"
     )
 
-    train_ds = load_dataset(
-        "json",
-        data_files="data/datasets/Smollm2_base_train_2048_nemotron_instruct_fc_base.jsonl",
-        split="train",
-    )
-
-    test_ds = load_dataset(
-        "json",
-        data_files="data/datasets/Smollm2_base_test_2048_nemotron_instruct_fc_base.jsonl",
-        split="train",
-    )
+    train_ds = SFTDataset(example_data, tokenizer, config)
+    test_ds = SFTDataset(example_data[:2], tokenizer, config)
 
     print(f"Train samples: {len(train_ds)}, Test samples: {len(test_ds)}")
 
-    class SFTDataset(TorchDataset):
-        def __init__(self, dataset, tokenizer, config):
-            self.dataset = dataset
-            self.tokenizer = tokenizer
-            self.config = config
-
-        def __len__(self):
-            return len(self.dataset)
-
-        def __getitem__(self, idx):
-            item = self.dataset[idx]
-            messages = item["messages"]
-
-            text = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-
-            enc = self.tokenizer(
-                text,
-                max_length=self.config.CONTEXT_LEN,
-                truncation=True,
-                padding="max_length",
-                return_tensors="pt",
-            )
-
-            input_ids = enc["input_ids"].squeeze(0)
-            labels = input_ids.clone()
-
-            return {"input_ids": input_ids, "labels": labels}
-
-    train_dataset = SFTDataset(train_ds, tokenizer, config)
-    test_dataset = SFTDataset(test_ds, tokenizer, config)
-
     train_loader = torch.utils.data.DataLoader(
-        train_dataset,
+        train_ds,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
         drop_last=True,
     )
 
     test_loader = torch.utils.data.DataLoader(
-        test_dataset,
+        test_ds,
         batch_size=config.BATCH_SIZE,
         shuffle=False,
     )
@@ -144,7 +171,7 @@ def main():
     global_step = 0
 
     for epoch in range(config.EPOCHS):
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
+        for batch in train_loader:
             input_ids = batch["input_ids"].to(config.DEVICE)
             labels = batch["labels"].to(config.DEVICE)
 
@@ -161,7 +188,7 @@ def main():
 
             global_step += 1
 
-            if global_step % 100 == 0:
+            if global_step % 10 == 0:
                 print(
                     f"Step {global_step}, Loss: {loss.item() * config.GRADIENT_ACCUMULATION_STEPS:.4f}"
                 )
@@ -174,7 +201,7 @@ def main():
                 labels = batch["labels"].to(config.DEVICE)
                 outputs = model(input_ids=input_ids, labels=labels)
                 eval_loss += outputs.loss.item()
-        eval_loss /= len(test_loader)
+        eval_loss /= max(len(test_loader), 1)
         print(f"Epoch {epoch + 1}, Eval Loss: {eval_loss:.4f}")
         model.train()
 
