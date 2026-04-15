@@ -689,9 +689,6 @@ print([eval(x) for x in re.findall(pattern, text)])
 # In[ ]:
 
 
-import mlx.core as mx
-
-
 def linear_decay_with_warmup(
     base_lr: float,
     total_steps: int,
@@ -701,18 +698,30 @@ def linear_decay_with_warmup(
     assert total_steps > warmup_steps + decay_steps
 
     def schedule(step):
+        # Convert step to tensor if it's a scalar
+        if isinstance(step, (int, float)):
+            step_tensor = torch.tensor(step, dtype=torch.float32)
+        else:
+            step_tensor = step.float()
+
         # Linear warmup: 0 → base_lr
-        warmup_lr = base_lr * step / warmup_steps
+        warmup_lr = base_lr * step_tensor / warmup_steps
         # Linear decay: base_lr → 0
-        decay_progress = (step - (total_steps - decay_steps)) / decay_steps
+        decay_progress = (step_tensor - (total_steps - decay_steps)) / decay_steps
         decay_lr = base_lr * (1.0 - decay_progress)
-        return mx.where(
-            step < warmup_steps,
+
+        lr = torch.where(
+            step_tensor < warmup_steps,
             warmup_lr,
-            mx.where(
-                step >= (total_steps - decay_steps), mx.maximum(decay_lr, 0.0), base_lr
+            torch.where(
+                step_tensor >= (total_steps - decay_steps),
+                torch.clamp(decay_lr, min=0.0),
+                torch.tensor(
+                    base_lr, device=step_tensor.device, dtype=step_tensor.dtype
+                ),
             ),
         )
+        return lr
 
     return schedule
 
