@@ -8,10 +8,10 @@
 
 ### 3.1.1 训练模块
 
-#### SFT 训练器 (`sft/train-mlx.py`)
+#### SFT 训练器 (`sft/train-torch.py`)
 
 **职责**：
-- 加载和转换 HuggingFace 模型到 MLX 格式
+- 加载 HuggingFace 模型到 CUDA
 - 管理数据集加载和分词
 - 执行监督微调训练
 - 保存模型检查点
@@ -21,16 +21,16 @@
 | 类名 | 职责 |
 |------|------|
 | `TrainConfig` | 训练超参数配置 |
-| `Dataset` | 内存优化的数据集类 |
+| `SFTDataset` | PyTorch 数据集类 |
 | `SFTrainer` | 训练循环管理 |
 
-#### GRPO 训练器 (`grpo/grpo-mlx.py`)
+#### GRPO 训练器 (`grpo/grpo-torch.py`)
 
 **职责**：
 - 生成采样轨迹
 - 计算奖励函数
 - 执行 GRPO 策略更新
-- 可视化训练进度
+- 训练进度可视化
 
 **核心类**：
 
@@ -86,20 +86,14 @@ train_ds += gsm_symbolic(...)            # GSM
 
 ### 3.2.1 梯度检查点（Gradient Checkpointing）
 
-**代码位置**：`utils/utils.py:75-88`
+PyTorch 使用 `torch.utils.checkpoint.checkpoint` 实现：
 
 ```python
-def grad_checkpoint(layer):
-    fn = type(layer).__call__
+from torch.utils.checkpoint import checkpoint
 
-    def checkpointed_fn(model, *args, **kwargs):
-        def inner_fn(params, *args, **kwargs):
-            model.update(params)
-            return fn(model, *args, **kwargs)
-
-        return mx.checkpoint(inner_fn)(model.trainable_parameters(), *args, **kwargs)
-
-    type(layer).__call__ = checkpointed_fn
+def forward_with_checkpoint(self, x):
+    # 分段执行前向传播，节省显存
+    return checkpoint(self._forward, x)
 ```
 
 **作用**：减少训练显存占用，用时间换空间

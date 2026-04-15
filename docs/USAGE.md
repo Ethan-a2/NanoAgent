@@ -1,4 +1,4 @@
-# NanoAgent 使用指南
+# NanoAgent 使用指南 (PyTorch CUDA 版)
 
 本文档详细介绍 NanoAgent 项目中所有脚本的使用方法。
 
@@ -11,8 +11,7 @@
 3. [数据准备](#3-数据准备)
 4. [模型训练](#4-模型训练)
 5. [模型评估](#5-模型评估)
-6. [模型转换与导出](#6-模型转换与导出)
-7. [工具脚本](#7-工具脚本)
+6. [工具脚本](#6-工具脚本)
 
 ---
 
@@ -34,17 +33,24 @@ source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
-### 1.2 MLX 安装（仅 macOS）
+### 1.2 CUDA 环境配置
 
 ```bash
-# 使用 pip 安装
-pip install mlx
+# 检查 CUDA 版本
+nvcc --version
 
-# 或使用 conda
-conda install -c conda-forge mlx
+# 检查 GPU
+nvidia-smi
+```
 
-# 安装 mlx-lm
-pip install mlx-lm
+安装 PyTorch CUDA 版本：
+
+```bash
+# 安装 PyTorch (CUDA 12.x)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# 安装 transformers (支持 CUDA)
+pip install transformers accelerate bitsandbytes
 ```
 
 ### 1.3 验证安装
@@ -54,33 +60,33 @@ pip install mlx-lm
 python --version
 # 期望: Python 3.9+
 
-# 检查 MLX
-python -c "import mlx; print(mlx.__version__)"
+# 检查 PyTorch 和 CUDA
+python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}')"
 
-# 检查 transformers
-python -c "import transformers; print(transformers.__version__)"
+# 检查 GPU
+python -c "import torch; print(torch.cuda.get_device_name(0))"
 ```
 
 ---
 
 ## 2. 模型推理
 
-### 2.1 使用 Jupyter Notebook（推荐）
+### 2.1 使用 Jupyter Notebook
 
 ```bash
 # 启动 Jupyter
 jupyter notebook notebooks/inference.ipynb
 ```
 
-在 notebook 中运行 cells 即可进行推理。
+使用 `notebooks/inference.ipynb` 中的代码进行推理。
 
 ### 2.2 使用 Python 脚本
 
 创建 `test_inference.py`：
 
 ```python
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import json
 
 # 模型路径（本地或 HuggingFace）
 MODEL_PATH = "quwsarohi/NanoAgent-135M"
@@ -89,8 +95,8 @@ MODEL_PATH = "quwsarohi/NanoAgent-135M"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_PATH,
-    torch_dtype="auto",
-    device_map="auto"
+    torch_dtype=torch.float16,  # 使用半精度
+    device_map="auto"          # 自动分配到 GPU
 )
 
 def inference(messages, max_new_tokens=256, temperature=0.3):
@@ -130,11 +136,12 @@ python test_inference.py
 
 ```python
 import json
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_PATH = "quwsarohi/NanoAgent-135M"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto")
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.float16, device_map="auto")
 
 # 定义工具
 tools = [
@@ -154,27 +161,18 @@ tools = [
     }
 ]
 
-# 系统提示模板
-TOOL_TEMPLATE = """You are a helpful AI assistant. You have a set of possible tools that you can execute to retrieve information or to perform specific actions. You can execute zero or more tools to answer user question.
+TOOL_TEMPLATE = """You are a helpful AI assistant. You have tools.
 
-Here are the list of tools that you have access to:
+Only execute tools from above. Follow JSON:
 ```json
-{tools}
-```
+[{{"name": "tool_name", "arguments": {{"arg1": "val1"}}}}]
+```"""
 
-Only execute tools from above. Follow the below JSON signature to execute tools:
-```json
-[{{"name": "tool_name", "arguments": {{"arg1": "val1", ...}}}}, ...]
-```
-"""
-
-# 构建消息
 messages = [
     {"role": "system", "content": TOOL_TEMPLATE.format(tools=json.dumps(tools, indent=2))},
     {"role": "user", "content": "What's the latest AI news?"},
 ]
 
-# 推理
 input_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 inputs = tokenizer.encode(input_text, return_tensors="pt").to(model.device)
 
@@ -199,22 +197,7 @@ python test_tool_call.py
 
 ## 3. 数据准备
 
-### 3.1 准备训练数据
-
-数据准备脚本位于 `data/dataprep.py`，需要配置数据集来源后运行：
-
-```bash
-# 查看可用的数据集准备函数
-grep "^def " data/dataprep.py
-```
-
-常用函数：
-
-- `shortcodes_python()` - Python 代码数据
-- `orca_math()` - 数学推理数据
-- `tool_calling()` - 工具调用数据
-
-### 3.2 数据格式
+### 3.1 训练数据格式
 
 训练数据采用 JSONL 格式：
 
@@ -223,20 +206,19 @@ grep "^def " data/dataprep.py
 {"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
 ```
 
-### 3.3 处理已有数据
+### 3.2 处理数据
 
 创建 `prepare_data.py`：
 
 ```python
-from datasets import load_dataset, Dataset
+from datasets import load_dataset
 from transformers import AutoTokenizer
-from utils.tokenizer import get_tokenizer
+
+# 加载分词器
+tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
 # 加载数据
 ds = load_dataset("json", data_files="your_data.jsonl", split="train")
-
-# 加载分词器
-tokenizer = get_tokenizer("HuggingFaceTB/SmolLM2-135M")
 
 # 应用 chat template
 def process_example(example):
@@ -248,8 +230,6 @@ def process_example(example):
     return {"text": text}
 
 ds = ds.map(process_example, batched=False)
-
-# 保存
 ds.to_json("data/datasets/train.jsonl")
 ```
 
@@ -267,84 +247,76 @@ python prepare_data.py
 
 #### 4.1.1 配置修改
 
-编辑 `sft/train-mlx.py` 中的 `TrainConfig`：
+编辑 `sft/train-torch.py` 中的 `TrainConfig`：
 
 ```python
 @dataclass
 class TrainConfig:
-    MODEL = "HuggingFaceTB/SmolLM2-135M"        # 基座模型
-    EPOCHS = 1                                   # 训练轮数
-    BATCH_SIZE = 1                               # 批量大小
-    CONTEXT_LEN = 2048                          # 上下文长度
-    MAX_LEARNING_RATE = 1e-4                      # 最大学习率
-    SCHEDULER = 'cosine'                        # 学习率调度器
-    SAVE_PATH = "weights/my-model"               # 保存路径
+    MODEL = "HuggingFaceTB/SmolLM2-135M"  # 基座模型
+    EPOCHS = 1                            # 训练轮数
+    BATCH_SIZE = 4                       # 批量大小 (根据显存调整)
+    CONTEXT_LEN = 2048                   # 上下文长度
+    LEARNING_RATE = 1e-4                 # 学习率
+    WEIGHT_DECAY = 0.1                   # 权重衰减
+    SAVE_PATH = "weights/my-model"       # 保存路径
 ```
 
 #### 4.1.2 运行训练
 
 ```bash
-# Mac M1/M2/M3
-python sft/train-mlx.py
+# 使用 GPU 训练
+python sft/train-torch.py
 ```
 
 训练过程中会显示：
-```
-TL 2.4532|0.0001 / EL 2.1234|0.0001 / CTX (2048, 1847, 2048) | LR 0.000095
-Training progress: 25.00
-```
 
-#### 4.1.3 从检查点恢复
-
-```python
-@dataclass
-class TrainConfig:
-    LOAD_PREV = True  # 设置为 True
+```
+Step 100, Loss: 2.4532
+Step 200, Loss: 2.1234
+...
 ```
 
 ### 4.2 GRPO 强化训练
 
 #### 4.2.1 配置修改
 
-编辑 `grpo/grpo-mlx.py` 中的 `TrainConfig`：
+编辑 `grpo/grpo-torch.py` 中的 `TrainConfig`：
 
 ```python
 @dataclass
 class TrainConfig:
-    MODEL = "weights/my-sft-model"              # SFT 模型路径
-    ITERS = 2000                             # 迭代次数
-    GROUP_SIZE = 8                           # 组大小
-    LEARNING_RATE = 1e-5                      # 学习率
-    TEMPERATURE = 0.4                        # 采样温度
-    TOP_P = 0.9                              # Top-p 采样
-    SAVE_PATH = "weights/my-grpo-model"         # 保存路径
-    GENERATE_DATA = True                      # 是否生成数据
+    MODEL = "weights/my-sft-model"    # SFT 模型路径
+    ITERS = 2000                    # 迭代次数
+    GROUP_SIZE = 8                  # 组大小
+    LEARNING_RATE = 1e-5           # 学习率
+    TEMPERATURE = 0.4               # 采样温度
+    TOP_P = 0.9                    # Top-p 采样
+    SAVE_PATH = "weights/my-grpo-model"
 ```
 
 #### 4.2.2 运行训练
 
 ```bash
-python grpo/grpo-mlx.py
-```
-
-训练过程中会：
-1. 生成训练数据集
-2. 对每个 prompt 采样 `GROUP_SIZE` 个响应
-3. 计算奖励并更新策略
-4. 绘制训练曲线
-
-### 4.3 使用 TRL 库训练
-
-```bash
-# 使用 HuggingFace TRL
-python grpo/grpo-trl.py
+python grpo/grpo-torch.py
 ```
 
 ---
 
 ## 5. 模型评估
 
-### 5.1 IFEval 评估
+### 5.1 BFCL 工具调用评估
+
+```bash
+# 安装 BFCL
+pip install bfcl_eval
+
+# 运行评估
+python benchmarks/bfcl/bfcl_eval.py \
+    --model_path weights/my-model \
+    --output results/bfcl/
+```
+
+### 5.2 IFEval 评估
 
 ```bash
 # 安装 lm-evaluation-harness
@@ -357,57 +329,23 @@ lm_eval model \
     --output_path results/ifeval/
 ```
 
-### 5.2 BFCL 工具调用评估
-
-#### 5.2.1 基本评估
-
-```bash
-python benchmarks/bfcl/bfcl_eval.py \
-    --model_path weights/my-model \
-    --output results/bfcl/
-```
-
-#### 5.2.2 评估特定类别
-
-```bash
-# 仅评估 simple_python
-python benchmarks/bfcl/bfcl_eval.py \
-    --model_path weights/my-model \
-    --category simple_python \
-    --output results/bfcl/
-```
-
-#### 5.2.3 运行测试脚本
-
-```bash
-# 测试推理
-python benchmarks/bfcl/test_inference.py
-
-# 测试多个模型
-python benchmarks/bfcl/test_multiple.py
-```
-
 ### 5.3 自定义评估
 
 创建 `custom_eval.py`：
 
 ```python
-import json
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_PATH = "weights/my-model"
-
-# 加载模型
-model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, device_map="auto")
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.float16, device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
-# 测试用例
 test_cases = [
     {"input": "Hi!", "expected": "Hello"},
     {"input": "What is 2+2?", "expected": "4"},
 ]
 
-# 运行评估
 correct = 0
 for case in test_cases:
     messages = [{"role": "user", "content": case["input"]}]
@@ -421,92 +359,38 @@ print(f"Accuracy: {accuracy:.2%}")
 
 ---
 
-## 6. 模型转换与导出
+## 6. 工具脚本
 
-### 6.1 转换为 MLX 格式
-
-```python
-from mlx_lm.utils import convert
-
-# HuggingFace -> MLX
-convert("HuggingFaceTB/SmolLM2-135M", mlx_path="weights/SmolLM2-135M")
-```
-
-### 6.2 导出为 GGUF
+### 6.1 基础推理脚本
 
 ```bash
-python utils/gguf_conv.py \
-    --input weights/my-model \
-    --output weights/my-model.gguf \
-    --quantization q4_0
+# 直接运行
+python notebooks/inference.py
 ```
 
-支持的量化方式：
-- `q4_0` - 4-bit 量化
-- `q5_0` - 5-bit 量化
-- `q8_0` - 8-bit 量化
-- `f16` - 半精度
-- `f32` - 全精度
+### 6.2 内存监控
 
-### 6.3 导出为 HuggingFace 格式
+```bash
+python -c "
+import torch
+print(f'GPU: {torch.cuda.get_device_name(0)}')
+print(f'Memory Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB')
+print(f'Memory Reserved: {torch.cuda.memory_reserved() / 1024**3:.2f} GB')
+"
+```
 
-```python
+### 6.3 模型信息
+
+```bash
+python -c "
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# 加载 MLX 模型并导出
-model = AutoModelForCausalLM.from_pretrained("weights/my-model")
-tokenizer = AutoTokenizer.from_pretrained("weights/my-model")
+model = AutoModelForCausalLM.from_pretrained('weights/my-model', torch_dtype=torch.float16, device_map='auto')
+tokenizer = AutoTokenizer.from_pretrained('weights/my-model')
 
-# 保存
-model.save_pretrained("weights/exported")
-tokenizer.save_pretrained("weights/exported")
-```
-
-### 6.4 上传到 HuggingFace
-
-```bash
-# 登录
-huggingface-cli login
-
-# 上传模型
-huggingface-cli upload your-username/NanoAgent-135M \
-    weights/my-model \
-    --repo-type model
-```
-
----
-
-## 7. 工具脚本
-
-### 7.1 分词器工具
-
-```bash
-# 测试分词器
-python -c "
-from utils.tokenizer import get_tokenizer
-t = get_tokenizer('HuggingFaceTB/SmolLM2-135M')
-print('EOS:', t.eos_token_id)
-print('PAD:', t.pad_token_id)
-"
-```
-
-### 7.2 模型信息
-
-```bash
-python -c "
-from mlx_lm import load
-model, tokenizer = load('weights/my-model')
-print(model)
-"
-```
-
-### 7.3 内存监控
-
-```bash
-python -c "
-import mlx.core as mx
-print(f'Active: {mx.get_active_memory() / 1024 / 1024:.2f} MB')
-print(f'Peak: {mx.get_peak_memory() / 1024 / 1024:.2f} MB')
+param_count = sum(p.numel() for p in model.parameters())
+print(f'Parameters: {param_count / 1e6:.1f}M')
 "
 ```
 
@@ -516,17 +400,19 @@ print(f'Peak: {mx.get_peak_memory() / 1024 / 1024:.2f} MB')
 
 ### Q: 显存不足怎么办？
 
-A: 
-1. 减小 `CONTEXT_LEN`
-2. 启用梯度检查点：`GRADIENT_CHECKPOINT_LAYERS = 6`
-3. 使用量化：`QUANTIZATION = 4`
+A:
+1. 减小 `BATCH_SIZE`
+2. 减小 `CONTEXT_LEN`
+3. 使用梯度累积：`GRADIENT_ACCUMULATION_STEPS`
+4. 使用 8-bit 量化：`load_in_8bit=True`
 
-### Q: 训练很慢怎么办？
+### Q: 训练速度慢怎么办？
 
 A:
-1. 增大 `BATCH_SIZE`（需要更多显存）
-2. 检查是否为量化模型训练
-3. 使用 SSD 存储数据
+1. 增大 `BATCH_SIZE`
+2. 使用混合精度：`torch.cuda.amp`
+3. 使用梯度累积
+4. 检查 CUDA 设置
 
 ### Q: 模型不收敛怎么办？
 
@@ -540,42 +426,23 @@ A:
 A:
 1. 降低 temperature（0.1 ~ 0.3）
 2. 检查 prompt 模板格式
-3. 添加示例到 system prompt
+3. 添加示例
 
 ---
 
-## 附录：目录结构
+## 附录：脚本对照表
 
-```
-NanoAgent/
-├── sft/                          # SFT 训练
-│   └── train-mlx.py
-├── grpo/                         # GRPO 训练
-│   ├── grpo-mlx.py
-│   ├── grpo-trl.py
-│   └── grpo-autostart.py
-├── utils/                        # 工具函数
-│   ├── tokenizer.py
-│   ├── tools.py
-│   ├── utils.py
-│   └── gguf_conv.py
-├── data/                        # 数据处理
-│   ├── dataprep.py
-│   ├── utils.py
-│   └── grpo/
-├── benchmarks/                  # 评估
-│   └── bfcl/
-├── notebooks/                  # Jupyter notebooks
-│   ├── inference.ipynb
-│   └── test.ipynb
-├── config/                    # 配置
-└── weights/                   # 模型权重
-```
+| 脚本 | 用途 | 设备 |
+|------|------|------|
+| `sft/train-torch.py` | SFT 训练 | CUDA |
+| `grpo/grpo-torch.py` | GRPO 训练 | CUDA |
+| `sft/train-mlx.py` | SFT 训练 | Apple MLX |
+| `grpo/grpo-mlx.py` | GRPO 训练 | Apple MLX |
 
 ---
 
 ## 参考
 
 - [NanoAgent HuggingFace](https://huggingface.co/quwsarohi/NanoAgent-135M)
-- [MLX 文档](https://ml-explore.github.io/mlx/)
-- [mlx-lm 文档](https://github.com/ml-explore/mlx-lm)
+- [PyTorch 文档](https://pytorch.org/docs/)
+- [Transformers 文档](https://huggingface.co/docs/transformers)

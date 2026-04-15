@@ -21,29 +21,13 @@
 | 上下文长度 | 8k |
 | 部署平台 | 边缘设备（笔记本、CPU、可穿戴设备） |
 | 训练方法 | SFT + GRPO |
-| 训练框架 | Apple MLX |
+| 训练框架 | PyTorch (CUDA) |
 
-### 1.1.3 基座模型
+### 1.2.2 为什么使用 PyTorch + CUDA？
 
-```
-SmolLM2-135M-Instruct (HuggingFaceTB/SmolLM2-135M)
-```
-
----
-
-## 1.2 架构决策
-
-### 1.2.1 为什么选择小模型？
-
-1. **资源受限环境**：能在 16GB RAM 的 Mac M1 上训练
-2. **推理速度快**：单卡即可运行实时推理
-3. **工具调用能力**：专注于单一能力（tool calling）而非通用能力
-
-### 1.2.2 为什么使用 MLX？
-
-- **Apple Silicon 优化**：充分利用 M1/M2/M3 芯片
-- **内存效率**：动态量化支持
-- **Python 原生**：与 HuggingFace 生态兼容
+- **GPU 加速**：充分利用 NVIDIA GPU 并行计算能力
+- **生态丰富**：支持 HuggingFace、DeepSpeed、FSDP 等
+- **易于部署**：支持量化、TensorRT、Triton 等优化
 
 ### 1.2.3 训练策略
 
@@ -51,7 +35,7 @@ SmolLM2-135M-Instruct (HuggingFaceTB/SmolLM2-135M)
 SFT (Supervised Fine-Tuning) → GRPO (Group Relative Policy Optimization)
 ```
 
-1. **SFT 阶段**：基础能力学习（对话、推理）
+1. **SFT 阶段**：基础能力学习（对话、推理），使用 PyTorch + CUDA
 2. **GRPO 阶段**：强化工具调用能力
 
 ---
