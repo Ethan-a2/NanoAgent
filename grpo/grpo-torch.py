@@ -17,7 +17,7 @@ class TrainConfig:
     MODEL = "weights/SmolLM2-135M-torch-sft"  # SFT 训练后的模型
     GEN_LEN = 128
     GROUP_SIZE = 4
-    ITERS = 20
+    ITERS = 5
     LEARNING_RATE = 1e-5
     EPSILON = 0.2
     TEMPERATURE = 0.4
