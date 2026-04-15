@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NanoAgent - 代码可视化幻灯片</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .presentation-container {
+            width: 100%;
+            height: 100vh;
+            position: relative;
+        }
+
+        .slide {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+
+        .slide.active {
+            display: flex;
+            opacity: 1;
+        }
+
+        .slide-content {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 50px;
+            max-width: 1200px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .slide h1 {
+            color: #667eea;
+            font-size: 2.8em;
+            margin-bottom: 30px;
+            border-bottom: 4px solid #667eea;
+            padding-bottom: 15px;
+        }
+
+        .slide h2 {
+            color: #764ba2;
+            font-size: 2em;
+            margin-bottom: 25px;
+        }
+
+        .slide h3 {
+            color: #5a67d8;
+            font-size: 1.5em;
+            margin: 20px 0 15px;
+        }
+
+        .slide p, .slide li {
+            color: #4a5568;
+            font-size: 1.2em;
+            line-height: 1.8;
+            margin: 10px 0;
+        }
+
+        .slide ul {
+            padding-left: 30px;
+        }
+
+        .slide li {
+            margin: 12px 0;
+        }
+
+        pre {
+            background: #0d1117 !important;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            overflow-x: auto;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            border: 2px solid #30363d;
+        }
+
+        code {
+            font-family: 'Fira Code', 'Consolas', monospace !important;
+            font-size: 14px !important;
+            line-height: 1.6 !important;
+        }
+
+        .nav-buttons {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            z-index: 1000;
+        }
+
+        .nav-btn {
+            background: rgba(255, 255, 255, 0.9);
+            border: none;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5em;
+            color: #667eea;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }
+
+        .nav-btn:hover {
+            background: #667eea;
+            color: white;
+            transform: scale(1.1);
+        }
+
+        .nav-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .nav-btn:disabled:hover {
+            background: rgba(255, 255, 255, 0.9);
+            color: #667eea;
+            transform: none;
+        }
+
+        .progress-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 6px;
+            background: #48bb78;
+            transition: width 0.3s ease;
+            z-index: 1000;
+        }
+
+        .slide-counter {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 12px 24px;
+            border-radius: 25px;
+            font-weight: bold;
+            color: #667eea;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+
+        .file-tree {
+            background: #f7fafc;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+
+        .file-tree pre {
+            margin: 0;
+            background: transparent !important;
+            border: none !important;
+            padding: 0 !important;
+        }
+
+        .architecture-diagram {
+            background: #f0f4ff;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 2px dashed #667eea;
+        }
+
+        .badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            margin: 5px 5px 5px 0;
+        }
+
+        .highlight-box {
+            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+            border-left: 4px solid #764ba2;
+            padding: 20px;
+            margin: 25px 0;
+            border-radius: 8px;
+        }
+
+        @media (max-width: 768px) {
+            .slide-content {
+                padding: 30px;
+            }
+            .slide h1 {
+                font-size: 2em;
+            }
+            .slide h2 {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="progress-bar" id="progressBar"></div>
+    <div class="slide-counter" id="slideCounter">1 / 10</div>
+
+    <div class="presentation-container">
+        <!-- Slide 1: 标题页 -->
+        <div class="slide active">
+            <div class="slide-content">
+                <h1><i class="fas fa-code"></i> NanoAgent 代码分析</h1>
+                <div style="text-align: center; margin: 40px 0;">
+                    <i class="fas fa-layer-group" style="font-size: 5em; color: #667eea; margin: 20px;"></i>
+                </div>
+                <h2 style="text-align: center; color: #764ba2; margin-top: 30px;">
+                    Python 深度学习框架
+                </h2>
+                <p style="text-align: center; font-size: 1.4em; color: #718096; margin-top: 40px;">
+                    代码架构可视化分析
+                </p>
+                <div style="text-align: center; margin-top: 50px;">
+                    <span class="badge">PyTorch</span>
+                    <span class="badge">MLX</span>
+                    <span class="badge">TRL</span>
+                    <span class="badge">SFT</span>
+                    <span class="badge">GRPO</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 2: 项目结构 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h2><i class="fas fa-folder-tree"></i> 项目目录结构</h2>
+                <div class="file-tree">
+                    <pre><code>NanoAgent/
+├── grpo/
+│   ├── grpo-torch.py      # PyTorch GRPO实现
+│   ├── grpo-mlx.py        # MLX框架GRPO实现
+│   ├── grpo-trl.py        # TRL库GRPO实现
+│   └── grpo-autostart.py  # 自动启动脚本
+├── sft/
+│   ├── train-torch.py     # PyTorch训练脚本
+│   └── train-mlx.py       # MLX训练脚本
+├── utils/
+│   ├── tools.py           # 工具函数集合
+│   ├── gguf_conv.py       # GGUF格式转换
+│   ├── tokenizer.py       # 分词器工具
+│   └── utils.py           # 通用工具函数
+├── notebooks/
+│   ├── prepare_data.py    # 数据准备
+│   ├── inference.py       # 推理脚本
+│   ├── test_tool_call.py  # 工具调用测试
+│   └── test_inference.py  # 推理测试
+└── benchmarks/
+    └── bfcl/
+        ├── bfcl_eval.py        # BFCL评估
+        ├── test_inference.py   # 推理测试
+        ├── test_multiple.py    # 多测试案例
+        └── custom_eval.py      # 自定义评估</code></pre>
+                </div>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-lightbulb"></i> 核心特点</h3>
+                    <ul>
+                        <li>多框架支持 (PyTorch, MLX, TRL)</li>
+                        <li>模块化设计</li>
+                        <li>完整的训练和推理流程</li>
+                        <li>包含评估和基准测试</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 3: GRPO 架构 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h2><i class="fas fa-cubes"></i> GRPO 架构设计</h2>
+                <div class="architecture-diagram">
+                    <pre><code>GRPO (Group Relative Policy Optimization)
+│
+├── grpo-torch.py (主要版本)
+│   ├── GRPOConfig: 配置类
+│   ├── GRPOTrainer: 训练器核心
+│   ├── ReweightingConfig: 重加权配置
+│   └──优势函数计算 & 策略梯度更新
+│
+├── grpo-mlx.py (Apple Silicon优化)
+│   └── 针对MLX框架的底层实现
+│
+└── grpo-trl.py (基于TRL库)
+    └── 集成HuggingFace TRL实现</code></pre>
+                </div>
+                <h3>三种实现的差异</h3>
+                <ul>
+                    <li><strong>PyTorch版本</strong>: 完整实现，适合通用场景</li>
+                    <li><strong>MLX版本</strong>: Apple Silicon优化，高效推理</li>
+                    <li><strong>TRL版本</strong>: 基于TRL库，生态集成好</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Slide 4: 训练流程 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h2><i class="fas fa-play-circle"></i> SFT + GRPO 训练流程</h2>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-arrow-right"></i> 阶段一: 监督微调 (SFT)</h3>
+                    <pre><code># sft/train-torch.py 核心逻辑
+def train_sft():
+    model = load_pretrained_model()
+    dataset = prepare_sft_dataset()
+    trainer = SFTTrainer(
+        model=model,
+        train_dataset=dataset,
+        learning_rate=2e-5,
+        num_train_epochs=3
+    )
+    trainer.train()
+    save_checkpoint(model)</code></pre>
+                </div>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-arrow-right"></i> 阶段二: GRPO 强化学习</h3>
+                    <pre><code># grpo/grpo-torch.py 核心逻辑
+def train_grpo():
+    model = load_sft_model()
+    ref_model = copy_model(model)  # 参考模型
+    for batch in dataloader:
+        rewards = compute_rewards(batch)
+        advantages = compute_advantages(rewards)
+        loss = grpo_loss(model, ref_model, advantages)
+        loss.backward()
+        optimizer.step()</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 5: 核心算法 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h2><i class="fas fa-brain"></i> GRPO 核心算法</h2>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-calculator"></i> 损失函数公式</h3>
+                    <pre><code># GRPO Loss (简化版)
+L_GRPO = E[min(
+    r_θ(x, y) * A,
+    clip(r_θ(x, y), 1-ε, 1+ε) * A
+)]
+
+其中:
+- r_θ(x, y) = π_θ(y|x) / π_ref(y|x)
+- A = 优势函数 (Advantage)
+- ε = 裁剪参数 (通常为0.2)</code></pre>
+                </div>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-code"></i> 关键实现</h3>
+                    <pre><code># 优势函数计算（grpo-torch.py）
+advantages = rewards - baseline
+advantages = (advantages - advantages.mean()) / \
+             (advantages.std() + 1e-8)
+
+# 重加权机制
+weights = compute_group_weights(advantages)
+loss = (log_probs * advantages * weights).mean()</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 6: 工具函数 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h2><i class="fas fa-toolbox"></i> utils 工具模块</h2>
+                <div class="file-tree">
+                    <pre><code>utils/
+├── tools.py
+│   ├── setup_logging(): 日志配置
+│   ├── set_seed(): 随机种子
+│   ├── AverageMeter: 指标平均
+│   ├── get_optimizer(): 优化器工厂
+│   └── save_checkpoint(): 模型保存
+│
+├── tokenizer.py
+│   ├── ChatFormatTokenizer: 对话格式化
+│   ├── load_tokenizer(): 加载分词器
+│   └── tokenize(): 文本编码
+│
+├── gguf_conv.py
+│   └── convert_to_gguf(): 格式转换工具
+│
+└── utils.py
+    └── 各种辅助函数集合</code></pre>
+                </div>
+                <h3>核心工具函数示例</h3>
+                <pre><code># utils/tools.py - AverageMeter
+class AverageMeter:
+    def __init__(self):
+        self.reset()
+    
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+    
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count</code></pre>
+            </div>
+        </div>
+
+        <!-- Slide 7: 推理架构 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h2><i class="fas fa-bolt"></i> 推理系统</h2>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-rocket"></i> notebooks/inference.py</h3>
+                    <pre><code>class NanoAgentInference:
+    def __init__(self, model_path, tokenizer_path):
+        self.model = AutoModel.from_pretrained(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        self.model.eval()
+    
+    def generate(self, prompt, max_length=512):
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_length=max_length,
+                temperature=0.7,
+                top_p=0.9
+            )
+        return self.tokenizer.decode(outputs[0])
+    
+    def batched_generate(self, prompts):
+        # 批量推理优化
+        return [self.generate(p) for p in prompts]</code></pre>
+                </div>
+                <h3>支持的推理模式</h3>
+                <ul>
+                    <li>单样本推理</li>
+                    <li>批量推理</li>
+                    <li>流式生成</li>
+                    <li>多种解码策略</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Slide 8: 基准测试 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h2><i class="fas fa-chart-line"></i> 基准测试框架</h2>
+                <div class="file-tree">
+                    <pre><code>benchmarks/bfcl/
+├── bfcl_eval.py       # 主评估脚本
+├── test_inference.py  # 推理性能测试
+├── test_multiple.py   # 多场景测试
+└── custom_eval.py     # 自定义指标评估</code></pre>
+                </div>
+                <div class="highlight-box">
+                    <h3>评估指标</h3>
+                    <ul>
+                        <li><strong>准确率</strong>: 模型输出正确性</li>
+                        <li><strong>推理速度</strong>: tokens/second</li>
+                        <li><strong>内存占用</strong>: GPU/CPU使用</li>
+                        <li><strong>模型大小</strong>: 参数量和显存</li>
+                    </ul>
+                </div>
+                <pre><code># benchmarks/bfcl/bfcl_eval.py
+def evaluate_model(model, test_cases):
+    results = []
+    for case in test_cases:
+        prediction = model.generate(case['input'])
+        score = compute_metrics(prediction, case['target'])
+        results.append(score)
+    
+    return {
+        'accuracy': np.mean([r['exact_match'] for r in results]),
+        'f1_score': np.mean([r['f1'] for r in results]),
+        'avg_latency': np.mean([r['latency'] for r in results])
+    }</code></pre>
+            </div>
+        </div>
+
+        <!-- Slide 9: 使用示例 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h2><i class="fas fa-book"></i> 快速开始</h2>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-terminal"></i> 1. 数据准备</h3>
+                    <pre><code>from utils.tokenizer import load_tokenizer
+
+tokenizer = load_tokenizer("meta-llama/Llama-2-7b-hf")
+dataset = load_dataset("your_dataset")
+
+def preprocess(example):
+    return tokenizer(
+        example["text"],
+        truncation=True,
+        max_length=512
+    )</code></pre>
+                </div>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-terminal"></i> 2. SFT 训练</h3>
+                    <pre><code>from sft.train_torch import SFTTrainer
+
+trainer = SFTTrainer(
+    model=model,
+    train_dataset=dataset,
+    eval_dataset=val_dataset,
+    per_device_train_batch_size=8,
+    num_train_epochs=3,
+    learning_rate=2e-5
+)
+trainer.train()</code></pre>
+                </div>
+                <div class="highlight-box">
+                    <h3><i class="fas fa-terminal"></i> 3. GRPO 训练</h3>
+                    <pre><code>from grpo.grpo_torch import GRPOTrainer
+
+trainer = GRPOTrainer(
+    model=model,
+    ref_model=ref_model,
+    reward_model=reward_model,
+    train_dataset=dataset
+)
+trainer.train()</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 10: 总结 -->
+        <div class="slide">
+            <div class="slide-content">
+                <h1><i class="fas fa-check-circle"></i> 总结</h1>
+                <div style="text-align: center; padding: 40px;">
+                    <div class="highlight-box" style="margin: 20px auto;">
+                        <h3>核心特性</h3>
+                        <ul style="list-style: none; padding: 0;">
+                            <li>✅ 多框架支持 (PyTorch, MLX, TRL)</li>
+                            <li>✅ 完整的 SFT + GRPO 流程</li>
+                            <li>✅ 模块化设计，易于扩展</li>
+                            <li>✅ 包含推理、评估、基准测试</li>
+                            <li>✅ 生产级别的代码质量</li>
+                        </ul>
+                    </div>
+                    <div style="margin-top: 50px;">
+                        <a href="https://github.com/anomalyco/NanoAgent" 
+                           style="display: inline-block; background: #667eea; color: white; 
+                                  padding: 15px 40px; text-decoration: none; 
+                                  border-radius: 30px; font-size: 1.2em;">
+                            <i class="fab fa-github"></i> 查看源码
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="nav-buttons">
+        <button class="nav-btn" id="prevBtn" onclick="changeSlide(-1)">
+            <i class="fas fa-chevron-left"></i>
+        </button>
+        <button class="nav-btn" id="nextBtn" onclick="changeSlide(1)">
+            <i class="fas fa-chevron-right"></i>
+        </button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+        const progressBar = document.getElementById('progressBar');
+        const slideCounter = document.getElementById('slideCounter');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+
+        function updateSlide() {
+            slides.forEach((slide, index) => {
+                slide.classList.remove('active');
+                if (index === currentSlide) {
+                    slide.classList.add('active');
+                }
+            });
+
+            const progress = ((currentSlide + 1) / totalSlides) * 100;
+            progressBar.style.width = progress + '%';
+            slideCounter.textContent = `${currentSlide + 1} / ${totalSlides}`;
+
+            prevBtn.disabled = currentSlide === 0;
+            nextBtn.disabled = currentSlide === totalSlides - 1;
+        }
+
+        function changeSlide(direction) {
+            currentSlide += direction;
+            if (currentSlide < 0) currentSlide = 0;
+            if (currentSlide >= totalSlides) currentSlide = totalSlides - 1;
+            updateSlide();
+        }
+
+        // 键盘导航
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                changeSlide(1);
+            } else if (e.key === 'ArrowLeft') {
+                changeSlide(-1);
+            }
+        });
+
+        // 代码高亮
+        hljs.highlightAll();
+
+        // 初始化
+        updateSlide();
+    </script>
+</body>
+</html>
