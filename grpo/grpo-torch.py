@@ -17,7 +17,7 @@ class TrainConfig:
     MODEL = "weights/SmolLM2-135M-torch-sft"  # SFT 训练后的模型
     GEN_LEN = 128
     GROUP_SIZE = 4
-    ITERS = 100
+    ITERS = 20
     LEARNING_RATE = 1e-5
     EPSILON = 0.2
     TEMPERATURE = 0.4
@@ -123,20 +123,22 @@ def main():
         samples = []
 
         # 多个采样用于计算奖励
-        for _ in range(config.GROUP_SIZE):
-            generated = generate_response(
-                model,
+        for i in range(config.GROUP_SIZE):
+            generated = model.generate(
                 input_ids,
-                config.GEN_LEN,
-                config.TEMPERATURE,
-                config.TOP_P,
-                tokenizer,
+                max_new_tokens=config.GEN_LEN,
+                do_sample=True,
+                temperature=config.TEMPERATURE,
+                top_p=config.TOP_P,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
             )
             generated_ids = generated[0][input_ids.shape[0] :]
             response = tokenizer.decode(generated_ids, skip_special_tokens=True)
             reward = simple_scorer(response, expected)
             rewards.append(reward)
             samples.append(generated)
+            print(f"  Sample {i}: reward={reward}, response='{response[:50]}...'")
 
         # 计算平均奖励
         avg_reward = sum(rewards) / len(rewards)
