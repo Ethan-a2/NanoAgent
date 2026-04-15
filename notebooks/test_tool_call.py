@@ -3,6 +3,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_PATH = "quwsarohi/NanoAgent-135M"
+# MODEL_PATH = "HuggingFaceTB/SmolLM2-135M-Instruct"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.float16, device_map="auto")
 
