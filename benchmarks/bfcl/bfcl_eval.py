@@ -222,7 +222,7 @@ def load_model_path(model_path):
         low_cpu_mem_usage=True,
         dtype=torch.bfloat16,
         # device_map='mps'
-    ).to('mps')
+    ).to('cuda')
     print("Model loaded successfully!")
     return model, tokenizer
 
