@@ -10,6 +10,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_PATH = "weights/SmolLM2-135M-Instruct-nemotron-instruct-fc-instruct-sft"
+# MODEL_PATH = "quwsarohi/NanoAgent-135M"
 BFCL_DATA_DIR = Path("/opt/python3.10/site-packages/bfcl_eval/data")
 
 

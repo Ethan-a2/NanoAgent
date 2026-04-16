@@ -20,8 +20,8 @@ BFCL_DATA_DIR = Path("/opt/python3.10/site-packages/bfcl_eval/data")
 
 # MODEL_PATH = "weights/SmolLM2-135M-Instruct-nemotron-instruct-fc-instruct-sft"
 # MODEL_PATH = "weights/NanoAgent-135M-nemotron-sft"
-# MODEL_PATH = "quwsarohi/NanoAgent-135M"
-MODEL_PATH = "weights/NanoAgent-135M-nemotron-grpo-toolcall/best_checkpoint"
+MODEL_PATH = "quwsarohi/NanoAgent-135M"
+# MODEL_PATH = "weights/NanoAgent-135M-nemotron-grpo-toolcall/best_checkpoint"
 
 OUTPUT_DIR = CURR_FPATH.parent / 'results' / 'bfcl' / MODEL_PATH.split('/')[-1].lower().replace('-', '__')
 
@@ -117,7 +117,7 @@ def generate_response(model, tokenizer, messages, max_new_tokens=384, prompt_lea
         
         with torch.no_grad():
             outputs = model.generate(
-                inputs.to('mps'),
+                inputs.to('cuda'),
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 # temperature=0.1,
