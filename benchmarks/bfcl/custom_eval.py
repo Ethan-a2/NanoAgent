@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 from utils.tools import parse_tool_calls
 
 CURR_FPATH = Path(__file__).parent.resolve()
-BFCL_DATA_DIR = Path("~/.local/lib/python3.10/site-packages/bfcl_eval/data")
+BFCL_DATA_DIR = Path("/opt/python3.10/site-packages/bfcl_eval/data")
 
 # MODEL_PATH = "weights/SmolLM2-135M-Instruct-nemotron-instruct-fc-instruct-sft"
 # MODEL_PATH = "quwsarohi/NanoAgent-135M"
