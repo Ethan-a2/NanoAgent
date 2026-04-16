@@ -16,7 +16,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
 CURR_FPATH = Path(__file__).parent.resolve()
-BFCL_DATA_DIR = Path("/opt/homebrew/lib/python3.11/site-packages/bfcl_eval/data")
+BFCL_DATA_DIR = Path("~/.local/lib/python3.10/site-packages/bfcl_eval/data")
 
 # MODEL_PATH = "weights/SmolLM2-135M-Instruct-nemotron-instruct-fc-instruct-sft"
 # MODEL_PATH = "weights/NanoAgent-135M-nemotron-sft"
