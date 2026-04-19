@@ -49,3 +49,6 @@ outputs = model.generate(
 
 response = tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
 print(f"Tool Call Response:\n{response}")
+
+# 怎么输出不是下面的？
+# Output: [{"name": "web_search", "arguments": {"query": "latest AI news 2026"}}]
